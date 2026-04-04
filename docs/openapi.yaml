@@ -10,6 +10,7 @@ tags:
   - name: Products
   - name: Cart
   - name: Orders
+  - name: Payments
 paths:
   /api/health:
     get:
@@ -248,6 +249,48 @@ paths:
         '200':
           description: Empty cart
 
+  /api/orders/reservations/current:
+    get:
+      tags: [Orders]
+      summary: Get current active reservation for user
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200':
+          description: Active reservation or null
+
+  /api/orders/reservations:
+    post:
+      tags: [Orders]
+      summary: Reserve inventory from current cart
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200':
+          description: Reservation created (or existing active returned)
+
+  /api/orders/reservations/{id}/cancel:
+    post:
+      tags: [Orders]
+      summary: Cancel reservation and release stock
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Reservation canceled
+
+  /api/orders/reservations/release-expired:
+    post:
+      tags: [Orders]
+      summary: Admin release expired reservations
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200':
+          description: Expired reservations released
+
   /api/orders:
     get:
       tags: [Orders]
@@ -275,7 +318,7 @@ paths:
   /api/orders/checkout:
     post:
       tags: [Orders]
-      summary: Create order from current cart
+      summary: Create order from active reservation
       security: [{ bearerAuth: [] }]
       requestBody:
         required: true
@@ -312,6 +355,37 @@ paths:
       responses:
         '200':
           description: Order updated
+
+  /api/payments/webhook:
+    post:
+      tags: [Payments]
+      summary: Payment webhook (HMAC signature + idempotency)
+      parameters:
+        - in: header
+          name: x-webhook-signature
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [eventId, type, payload]
+              properties:
+                eventId:
+                  type: string
+                type:
+                  type: string
+                  example: payment.captured
+                orderId:
+                  type: string
+                payload:
+                  type: object
+      responses:
+        '200':
+          description: Webhook processed
 
 components:
   securitySchemes:
@@ -358,8 +432,10 @@ components:
             fullName: { type: string }
     CheckoutRequest:
       type: object
-      required: [address, paymentMethod, shippingMethod]
+      required: [reservationId, address, paymentMethod, shippingMethod]
       properties:
+        reservationId:
+          type: string
         address:
           type: object
           required: [receiverName, phone, line1, district, city, country]

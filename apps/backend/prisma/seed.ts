@@ -4,9 +4,12 @@ import { hashPassword } from '../src/common/security';
 const prisma = new PrismaClient();
 
 async function main() {
+  await prisma.paymentWebhookEvent.deleteMany();
   await prisma.orderStatusEvent.deleteMany();
   await prisma.orderItem.deleteMany();
   await prisma.order.deleteMany();
+  await prisma.inventoryReservationItem.deleteMany();
+  await prisma.inventoryReservation.deleteMany();
   await prisma.cartItem.deleteMany();
   await prisma.refreshSession.deleteMany();
   await prisma.product.deleteMany();

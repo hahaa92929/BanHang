@@ -176,6 +176,12 @@ body {
   margin: 4px 0;
 }
 
+.row-actions {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
 .order-list {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
@@ -237,6 +243,10 @@ button:disabled {
 
 @media (max-width: 980px) {
   .grid {
+    grid-template-columns: 1fr;
+  }
+
+  .row-actions {
     grid-template-columns: 1fr;
   }
 }

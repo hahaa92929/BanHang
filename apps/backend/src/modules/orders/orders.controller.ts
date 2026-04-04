@@ -21,6 +21,21 @@ import { OrdersService } from './orders.service';
 export class OrdersController {
   constructor(private readonly service: OrdersService) {}
 
+  @Get('reservations/current')
+  currentReservation(@Req() request: RequestWithUser) {
+    return this.service.getCurrentReservation(request.user.sub);
+  }
+
+  @Post('reservations')
+  reserve(@Req() request: RequestWithUser) {
+    return this.service.createReservationFromCart(request.user.sub);
+  }
+
+  @Post('reservations/:id/cancel')
+  cancelReservation(@Req() request: RequestWithUser, @Param('id') id: string) {
+    return this.service.cancelReservation(id, request.user.sub, request.user.role);
+  }
+
   @Get()
   list(@Req() request: RequestWithUser) {
     return this.service.list(request.user.sub, request.user.role);
@@ -45,5 +60,12 @@ export class OrdersController {
     @Body() body: UpdateOrderStatusDto,
   ) {
     return this.service.updateStatus(id, body.status, request.user.sub);
+  }
+
+  @Post('reservations/release-expired')
+  @UseGuards(RolesGuard)
+  @Roles('admin')
+  releaseExpired(@Req() request: RequestWithUser) {
+    return this.service.releaseExpiredReservations(request.user.sub);
   }
 }

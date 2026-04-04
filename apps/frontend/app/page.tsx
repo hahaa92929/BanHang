@@ -7,6 +7,7 @@ type ProductSort = 'price_asc' | 'price_desc' | 'rating_desc' | 'newest';
 type PaymentMethod = 'cod' | 'vnpay' | 'momo';
 type ShippingMethod = 'standard' | 'express';
 type OrderStatus = 'created' | 'confirmed' | 'shipping' | 'completed';
+type ReservationStatus = 'active' | 'consumed' | 'canceled' | 'expired';
 
 type User = {
   id: string;
@@ -46,6 +47,15 @@ type Cart = {
   items: Array<{ productId: string; name: string; unitPrice: number; quantity: number }>;
   subtotal: number;
   totalItems: number;
+};
+
+type ReservationSummary = {
+  id: string;
+  status: ReservationStatus;
+  expiresAt: string;
+  subtotal: number;
+  totalItems: number;
+  items: Array<{ productId: string; name: string; unitPrice: number; quantity: number }>;
 };
 
 type Order = {
@@ -143,12 +153,18 @@ export default function HomePage() {
   const [productsMeta, setProductsMeta] = useState({ total: 0, page: 1, totalPages: 1, limit: 6 });
 
   const [cart, setCart] = useState<Cart>({ items: [], subtotal: 0, totalItems: 0 });
+  const [reservation, setReservation] = useState<ReservationSummary | null>(null);
   const [checkoutStep, setCheckoutStep] = useState<1 | 2 | 3>(1);
   const [checkout, setCheckout] = useState<CheckoutState>(INITIAL_CHECKOUT);
 
   const [orders, setOrders] = useState<Order[]>([]);
   const [notice, setNotice] = useState<NoticeState>(null);
-  const [loading, setLoading] = useState({ products: false, cart: false, orders: false });
+  const [loading, setLoading] = useState({
+    products: false,
+    cart: false,
+    orders: false,
+    reservation: false,
+  });
 
   const isAuthenticated = Boolean(auth?.accessToken);
 
@@ -248,6 +264,74 @@ export default function HomePage() {
     }
   }
 
+  async function loadCurrentReservation() {
+    if (!isAuthenticated) {
+      setReservation(null);
+      return;
+    }
+
+    setLoading((prev) => ({ ...prev, reservation: true }));
+
+    try {
+      const result = await requestJson<{ data: ReservationSummary | null }>('/api/orders/reservations/current', {
+        headers: authHeaders,
+      });
+      setReservation(result.data);
+    } catch (error) {
+      notify('error', error instanceof Error ? error.message : 'Failed to load reservation');
+    } finally {
+      setLoading((prev) => ({ ...prev, reservation: false }));
+    }
+  }
+
+  async function createReservation() {
+    if (!isAuthenticated) {
+      notify('error', 'Please login first');
+      return null;
+    }
+
+    setLoading((prev) => ({ ...prev, reservation: true }));
+
+    try {
+      const result = await requestJson<ReservationSummary>('/api/orders/reservations', {
+        method: 'POST',
+        headers: authHeaders,
+      });
+      setReservation(result);
+      notify('ok', 'Inventory reserved for checkout');
+      return result;
+    } catch (error) {
+      notify('error', error instanceof Error ? error.message : 'Failed to reserve inventory');
+      return null;
+    } finally {
+      setLoading((prev) => ({ ...prev, reservation: false }));
+    }
+  }
+
+  async function cancelReservation(silent = false) {
+    if (!isAuthenticated || !reservation) {
+      setReservation(null);
+      return;
+    }
+
+    try {
+      await requestJson<{ success: boolean }>(`/api/orders/reservations/${reservation.id}/cancel`, {
+        method: 'POST',
+        headers: authHeaders,
+      });
+      if (!silent) notify('ok', 'Reservation canceled');
+    } catch {
+      if (!silent) notify('error', 'Failed to cancel reservation');
+    } finally {
+      setReservation(null);
+    }
+  }
+
+  async function invalidateReservationForCartChange() {
+    if (!reservation) return;
+    await cancelReservation(true);
+  }
+
   async function submitAuth(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
 
@@ -289,6 +373,10 @@ export default function HomePage() {
   }
 
   async function logout() {
+    if (reservation) {
+      await cancelReservation(true);
+    }
+
     if (auth) {
       try {
         await requestJson<{ success: boolean }>('/api/auth/logout', {
@@ -304,6 +392,7 @@ export default function HomePage() {
     setAuth(null);
     setOrders([]);
     setCart({ items: [], subtotal: 0, totalItems: 0 });
+    setReservation(null);
     notify('ok', 'Logged out');
   }
 
@@ -314,6 +403,8 @@ export default function HomePage() {
     }
 
     try {
+      await invalidateReservationForCartChange();
+
       const result = await requestJson<Cart>('/api/cart/items', {
         method: 'POST',
         headers: authHeaders,
@@ -336,6 +427,8 @@ export default function HomePage() {
     }
 
     try {
+      await invalidateReservationForCartChange();
+
       const result = await requestJson<Cart>(`/api/cart/items/${productId}`, {
         method: 'PATCH',
         headers: authHeaders,
@@ -352,6 +445,8 @@ export default function HomePage() {
     if (!isAuthenticated) return;
 
     try {
+      await invalidateReservationForCartChange();
+
       const result = await requestJson<Cart>(`/api/cart/items/${productId}`, {
         method: 'DELETE',
         headers: authHeaders,
@@ -367,6 +462,8 @@ export default function HomePage() {
     if (!isAuthenticated) return;
 
     try {
+      await invalidateReservationForCartChange();
+
       const result = await requestJson<Cart>('/api/cart/clear', {
         method: 'DELETE',
         headers: authHeaders,
@@ -386,10 +483,17 @@ export default function HomePage() {
     }
 
     try {
+      const activeReservation = reservation ?? (await createReservation());
+
+      if (!activeReservation) {
+        throw new Error('Reservation is required before checkout');
+      }
+
       await requestJson<Order>('/api/orders/checkout', {
         method: 'POST',
         headers: authHeaders,
         body: JSON.stringify({
+          reservationId: activeReservation.id,
           address: {
             receiverName: checkout.receiverName,
             phone: checkout.phone,
@@ -406,6 +510,7 @@ export default function HomePage() {
 
       setCheckoutStep(1);
       setCheckout(INITIAL_CHECKOUT);
+      setReservation(null);
       notify('ok', 'Checkout success');
       await Promise.all([loadCart(), loadOrders(), loadProducts()]);
     } catch (error) {
@@ -460,7 +565,7 @@ export default function HomePage() {
 
   useEffect(() => {
     if (isAuthenticated) {
-      void Promise.all([loadCart(), loadOrders()]);
+      void Promise.all([loadCart(), loadOrders(), loadCurrentReservation()]);
     }
   }, [isAuthenticated]);
 
@@ -783,16 +888,40 @@ export default function HomePage() {
                 <p>Payment: {checkout.paymentMethod}</p>
                 <p>Shipping: {checkout.shippingMethod}</p>
                 <p>Cart total: {toCurrency(cart.subtotal)}</p>
+                <p>
+                  Reservation:{' '}
+                  {reservation
+                    ? `${reservation.id} (expire ${new Date(reservation.expiresAt).toLocaleTimeString('vi-VN')})`
+                    : 'Not reserved'}
+                </p>
               </div>
             )}
 
-            <button
-              type="button"
-              onClick={() => void submitCheckout()}
-              disabled={!cart.items.length || !isAuthenticated}
-            >
-              Submit checkout
-            </button>
+            <div className="row-actions">
+              <button
+                type="button"
+                className="alt"
+                onClick={() => void createReservation()}
+                disabled={!cart.items.length || !isAuthenticated || loading.reservation}
+              >
+                Reserve inventory
+              </button>
+              <button
+                type="button"
+                className="danger"
+                onClick={() => void cancelReservation()}
+                disabled={!reservation || loading.reservation}
+              >
+                Cancel reservation
+              </button>
+              <button
+                type="button"
+                onClick={() => void submitCheckout()}
+                disabled={!cart.items.length || !isAuthenticated || loading.reservation}
+              >
+                Submit checkout
+              </button>
+            </div>
           </div>
         </aside>
       </section>

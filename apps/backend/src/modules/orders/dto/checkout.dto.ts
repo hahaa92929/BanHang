@@ -36,6 +36,10 @@ class AddressDto {
 }
 
 export class CheckoutDto {
+  @IsString()
+  @IsNotEmpty()
+  reservationId!: string;
+
   @ValidateNested()
   @Type(() => AddressDto)
   address!: AddressDto;

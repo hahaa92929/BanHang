@@ -44,6 +44,13 @@ enum ShippingStatus {
   delivered
 }
 
+enum ReservationStatus {
+  active
+  consumed
+  canceled
+  expired
+}
+
 model User {
   id              String           @id @default(cuid())
   email           String           @unique
@@ -53,6 +60,7 @@ model User {
   createdAt       DateTime         @default(now())
   cartItems       CartItem[]
   orders          Order[]
+  reservations    InventoryReservation[]
   refreshSessions RefreshSession[]
   statusHistories OrderStatusEvent[] @relation("OrderStatusEventActor")
 }
@@ -70,6 +78,7 @@ model Product {
   createdAt  DateTime   @default(now())
   cartItems  CartItem[]
   orderItems OrderItem[]
+  reservationItems InventoryReservationItem[]
 }
 
 model CartItem {
@@ -90,6 +99,7 @@ model CartItem {
 model Order {
   id            String           @id @default(cuid())
   userId        String
+  reservationId String?          @unique
   status        OrderStatus      @default(created)
   paymentMethod PaymentMethod
   paymentStatus PaymentStatus
@@ -104,12 +114,49 @@ model Order {
   updatedAt     DateTime         @updatedAt
 
   user          User             @relation(fields: [userId], references: [id], onDelete: Restrict)
+  reservation   InventoryReservation? @relation(fields: [reservationId], references: [id], onDelete: SetNull)
   items         OrderItem[]
   history       OrderStatusEvent[]
+  paymentEvents PaymentWebhookEvent[]
 
   @@index([userId])
   @@index([status])
   @@index([createdAt])
+}
+
+model InventoryReservation {
+  id         String            @id @default(cuid())
+  userId     String
+  status     ReservationStatus @default(active)
+  expiresAt  DateTime
+  consumedAt DateTime?
+  canceledAt DateTime?
+  expiredAt  DateTime?
+  createdAt  DateTime          @default(now())
+  updatedAt  DateTime          @updatedAt
+
+  user       User                      @relation(fields: [userId], references: [id], onDelete: Restrict)
+  items      InventoryReservationItem[]
+  order      Order?
+
+  @@index([userId])
+  @@index([status])
+  @@index([expiresAt])
+}
+
+model InventoryReservationItem {
+  id            String @id @default(cuid())
+  reservationId String
+  productId     String
+  name          String
+  unitPrice     Int
+  quantity      Int
+
+  reservation InventoryReservation @relation(fields: [reservationId], references: [id], onDelete: Cascade)
+  product     Product              @relation(fields: [productId], references: [id], onDelete: Restrict)
+
+  @@index([reservationId])
+  @@index([productId])
 }
 
 model OrderItem {
@@ -149,4 +196,17 @@ model RefreshSession {
 
   @@index([userId])
   @@index([expiresAt])
+}
+
+model PaymentWebhookEvent {
+  eventId     String   @id
+  type        String
+  orderId     String?
+  payload     Json
+  processedAt DateTime @default(now())
+
+  order Order? @relation(fields: [orderId], references: [id], onDelete: SetNull)
+
+  @@index([orderId])
+  @@index([processedAt])
 }
