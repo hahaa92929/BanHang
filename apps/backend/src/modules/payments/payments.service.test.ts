@@ -135,3 +135,47 @@ test('processWebhook should reject invalid signature', async () => {
     /Invalid webhook signature/,
   );
 });
+
+test('processWebhook should keep current payment status for unknown payment.* event', async () => {
+  const secret = 'test-secret';
+  process.env.PAYMENT_WEBHOOK_SECRET = secret;
+
+  const { prisma, orders } = buildMockPrisma('authorized');
+  const service = new PaymentsService(prisma as never);
+
+  const body = {
+    eventId: 'evt-unknown-payment',
+    type: 'payment.pending_review',
+    orderId: 'ord-1',
+    payload: { provider: 'vnpay' },
+  };
+
+  const signature = signPayload(body, secret);
+  const result = await service.processWebhook(signature, body);
+
+  assert.equal(result.processed, true);
+  assert.equal(result.orderUpdate, null);
+  assert.equal(orders.get('ord-1')?.paymentStatus, 'authorized');
+});
+
+test('processWebhook should reject unsupported non-payment event', async () => {
+  const secret = 'test-secret';
+  process.env.PAYMENT_WEBHOOK_SECRET = secret;
+
+  const { prisma } = buildMockPrisma('pending');
+  const service = new PaymentsService(prisma as never);
+
+  const body = {
+    eventId: 'evt-bad-type',
+    type: 'shipment.updated',
+    orderId: 'ord-1',
+    payload: { code: 'x' },
+  };
+
+  const signature = signPayload(body, secret);
+
+  await assert.rejects(
+    async () => service.processWebhook(signature, body),
+    /Unsupported webhook event type/,
+  );
+});

@@ -35,6 +35,7 @@ Neu gap loi `Access is denied` khi `docker compose up -d`, mo Docker Desktop/ter
 
 ## Scripts
 - `npm run build`: build ca frontend + backend
+- `npm run test:backend`: chay unit test backend
 - `npm run db:generate`
 - `npm run db:migrate`
 - `npm run db:seed`
