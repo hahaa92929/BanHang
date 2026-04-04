@@ -1,0 +1,152 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum UserRole {
+  admin
+  customer
+}
+
+enum OrderStatus {
+  created
+  confirmed
+  shipping
+  completed
+}
+
+enum PaymentMethod {
+  cod
+  vnpay
+  momo
+}
+
+enum PaymentStatus {
+  pending
+  authorized
+  paid
+  failed
+}
+
+enum ShippingMethod {
+  standard
+  express
+}
+
+enum ShippingStatus {
+  pending
+  packed
+  in_transit
+  delivered
+}
+
+model User {
+  id              String           @id @default(cuid())
+  email           String           @unique
+  passwordHash    String
+  fullName        String
+  role            UserRole         @default(customer)
+  createdAt       DateTime         @default(now())
+  cartItems       CartItem[]
+  orders          Order[]
+  refreshSessions RefreshSession[]
+  statusHistories OrderStatusEvent[] @relation("OrderStatusEventActor")
+}
+
+model Product {
+  id         String     @id @default(cuid())
+  sku        String     @unique
+  name       String
+  category   String
+  description String
+  price      Int
+  stock      Int
+  rating     Float      @default(0)
+  tags       String[]
+  createdAt  DateTime   @default(now())
+  cartItems  CartItem[]
+  orderItems OrderItem[]
+}
+
+model CartItem {
+  id        String   @id @default(cuid())
+  userId    String
+  productId String
+  quantity  Int
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  product Product @relation(fields: [productId], references: [id], onDelete: Restrict)
+
+  @@unique([userId, productId])
+  @@index([userId])
+}
+
+model Order {
+  id            String           @id @default(cuid())
+  userId        String
+  status        OrderStatus      @default(created)
+  paymentMethod PaymentMethod
+  paymentStatus PaymentStatus
+  shippingMethod ShippingMethod
+  shippingStatus ShippingStatus
+  addressJson   Json
+  notes         String
+  subtotal      Int
+  shippingFee   Int
+  total         Int
+  createdAt     DateTime         @default(now())
+  updatedAt     DateTime         @updatedAt
+
+  user          User             @relation(fields: [userId], references: [id], onDelete: Restrict)
+  items         OrderItem[]
+  history       OrderStatusEvent[]
+
+  @@index([userId])
+  @@index([status])
+  @@index([createdAt])
+}
+
+model OrderItem {
+  id        String   @id @default(cuid())
+  orderId   String
+  productId String
+  name      String
+  unitPrice Int
+  quantity  Int
+
+  order   Order   @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  product Product @relation(fields: [productId], references: [id], onDelete: Restrict)
+
+  @@index([orderId])
+}
+
+model OrderStatusEvent {
+  id        String      @id @default(cuid())
+  orderId   String
+  status    OrderStatus
+  actorId   String
+  createdAt DateTime    @default(now())
+
+  order Order @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  actor User  @relation("OrderStatusEventActor", fields: [actorId], references: [id], onDelete: Restrict)
+
+  @@index([orderId])
+}
+
+model RefreshSession {
+  token     String   @id
+  userId    String
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([expiresAt])
+}

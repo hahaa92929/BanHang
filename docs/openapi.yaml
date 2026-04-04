@@ -1,0 +1,380 @@
+openapi: 3.0.3
+info:
+  title: BanHang API (Next.js + NestJS)
+  version: 1.1.0
+servers:
+  - url: http://localhost:4000
+tags:
+  - name: Health
+  - name: Auth
+  - name: Products
+  - name: Cart
+  - name: Orders
+paths:
+  /api/health:
+    get:
+      tags: [Health]
+      summary: Health check
+      responses:
+        '200':
+          description: OK
+
+  /api/auth/login:
+    post:
+      tags: [Auth]
+      summary: Login
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoginRequest'
+      responses:
+        '200':
+          description: Auth payload
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthResponse'
+
+  /api/auth/register:
+    post:
+      tags: [Auth]
+      summary: Register customer account
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RegisterRequest'
+      responses:
+        '200':
+          description: Auth payload
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthResponse'
+
+  /api/auth/refresh:
+    post:
+      tags: [Auth]
+      summary: Refresh access token
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [refreshToken]
+              properties:
+                refreshToken:
+                  type: string
+      responses:
+        '200':
+          description: Auth payload
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthResponse'
+
+  /api/auth/me:
+    get:
+      tags: [Auth]
+      summary: Current user profile
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200':
+          description: User info
+
+  /api/auth/logout:
+    post:
+      tags: [Auth]
+      summary: Logout and revoke refresh token
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                refreshToken:
+                  type: string
+      responses:
+        '200':
+          description: Logout success
+
+  /api/products:
+    get:
+      tags: [Products]
+      summary: List products with filters and paging
+      parameters:
+        - in: query
+          name: q
+          schema:
+            type: string
+        - in: query
+          name: category
+          schema:
+            type: string
+        - in: query
+          name: minPrice
+          schema:
+            type: number
+        - in: query
+          name: maxPrice
+          schema:
+            type: number
+        - in: query
+          name: inStock
+          schema:
+            type: boolean
+        - in: query
+          name: sort
+          schema:
+            type: string
+            enum: [newest, price_asc, price_desc, rating_desc]
+        - in: query
+          name: page
+          schema:
+            type: integer
+            minimum: 1
+        - in: query
+          name: limit
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 50
+      responses:
+        '200':
+          description: Product list
+
+  /api/products/categories:
+    get:
+      tags: [Products]
+      summary: List available categories
+      responses:
+        '200':
+          description: Categories
+
+  /api/products/{id}:
+    get:
+      tags: [Products]
+      summary: Product detail
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Product detail
+
+  /api/cart:
+    get:
+      tags: [Cart]
+      summary: Get current cart
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200':
+          description: Cart
+
+  /api/cart/items:
+    post:
+      tags: [Cart]
+      summary: Add item to cart
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [productId, quantity]
+              properties:
+                productId:
+                  type: string
+                quantity:
+                  type: integer
+      responses:
+        '200':
+          description: Updated cart
+
+  /api/cart/items/{productId}:
+    patch:
+      tags: [Cart]
+      summary: Update item quantity
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - in: path
+          name: productId
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [quantity]
+              properties:
+                quantity:
+                  type: integer
+      responses:
+        '200':
+          description: Updated cart
+    delete:
+      tags: [Cart]
+      summary: Remove cart item
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - in: path
+          name: productId
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Updated cart
+
+  /api/cart/clear:
+    delete:
+      tags: [Cart]
+      summary: Clear all cart items
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200':
+          description: Empty cart
+
+  /api/orders:
+    get:
+      tags: [Orders]
+      summary: List user orders (or all orders for admin)
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200':
+          description: Orders
+
+  /api/orders/{id}:
+    get:
+      tags: [Orders]
+      summary: Order detail
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Order detail
+
+  /api/orders/checkout:
+    post:
+      tags: [Orders]
+      summary: Create order from current cart
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CheckoutRequest'
+      responses:
+        '201':
+          description: Order created
+
+  /api/orders/{id}/status:
+    patch:
+      tags: [Orders]
+      summary: Admin updates order status in 4-step flow
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [status]
+              properties:
+                status:
+                  type: string
+                  enum: [confirmed, shipping, completed]
+      responses:
+        '200':
+          description: Order updated
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+  schemas:
+    LoginRequest:
+      type: object
+      required: [email, password]
+      properties:
+        email:
+          type: string
+          format: email
+        password:
+          type: string
+    RegisterRequest:
+      type: object
+      required: [email, password, fullName]
+      properties:
+        email:
+          type: string
+          format: email
+        password:
+          type: string
+        fullName:
+          type: string
+    AuthResponse:
+      type: object
+      properties:
+        accessToken:
+          type: string
+        refreshToken:
+          type: string
+        expiresIn:
+          type: integer
+        user:
+          type: object
+          properties:
+            id: { type: string }
+            email: { type: string }
+            role: { type: string }
+            fullName: { type: string }
+    CheckoutRequest:
+      type: object
+      required: [address, paymentMethod, shippingMethod]
+      properties:
+        address:
+          type: object
+          required: [receiverName, phone, line1, district, city, country]
+          properties:
+            receiverName: { type: string }
+            phone: { type: string }
+            line1: { type: string }
+            district: { type: string }
+            city: { type: string }
+            country: { type: string }
+        paymentMethod:
+          type: string
+          enum: [cod, vnpay, momo]
+        shippingMethod:
+          type: string
+          enum: [standard, express]
+        notes:
+          type: string
