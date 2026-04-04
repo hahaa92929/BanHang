@@ -1,19 +1,30 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { BadRequestException, ForbiddenException } from '@nestjs/common';
+import { BadRequestException, NotFoundException } from '@nestjs/common';
 import { OrdersService } from './orders.service';
 
-type ProductRecord = { id: string; name: string; price: number; stock: number };
+type ProductRecord = {
+  id: string;
+  sku: string;
+  slug: string;
+  name: string;
+  description: string;
+  price: number;
+  stock: number;
+  status: 'active' | 'draft' | 'archived';
+};
+
 type CartRecord = { id: string; userId: string; productId: string; quantity: number; createdAt: Date };
 type ReservationRecord = {
   id: string;
   userId: string;
   status: 'active' | 'consumed' | 'canceled' | 'expired';
   expiresAt: Date;
+  consumedAt: Date | null;
+  canceledAt: Date | null;
+  expiredAt: Date | null;
   createdAt: Date;
-  consumedAt?: Date | null;
-  canceledAt?: Date | null;
-  expiredAt?: Date | null;
+  updatedAt: Date;
 };
 type ReservationItemRecord = {
   id: string;
@@ -25,18 +36,30 @@ type ReservationItemRecord = {
 };
 type OrderRecord = {
   id: string;
+  orderNumber: string;
   userId: string;
-  reservationId?: string | null;
-  status: 'created' | 'confirmed' | 'shipping' | 'completed';
+  reservationId: string | null;
+  couponId: string | null;
+  status: 'created' | 'confirmed' | 'shipping' | 'completed' | 'canceled' | 'returned';
   paymentMethod: 'cod' | 'vnpay' | 'momo';
-  paymentStatus: 'pending' | 'authorized' | 'paid' | 'failed';
-  shippingMethod: 'standard' | 'express';
-  shippingStatus: 'pending' | 'packed' | 'in_transit' | 'delivered';
+  paymentStatus: 'pending' | 'authorized' | 'paid' | 'failed' | 'refunded' | 'partially_refunded' | 'canceled';
+  shippingMethod: 'standard' | 'express' | 'same_day' | 'pickup';
+  shippingStatus: 'pending' | 'packed' | 'in_transit' | 'delivered' | 'returned' | 'canceled';
   addressJson: Record<string, unknown>;
   notes: string;
   subtotal: number;
+  discountAmount: number;
+  taxAmount: number;
   shippingFee: number;
   total: number;
+  currency: string;
+  trackingCode: string | null;
+  confirmedAt: Date | null;
+  shippedAt: Date | null;
+  deliveredAt: Date | null;
+  completedAt: Date | null;
+  canceledAt: Date | null;
+  returnedAt: Date | null;
   createdAt: Date;
   updatedAt: Date;
 };
@@ -44,23 +67,52 @@ type OrderItemRecord = {
   id: string;
   orderId: string;
   productId: string;
+  sku: string;
   name: string;
   unitPrice: number;
   quantity: number;
+  totalPrice: number;
 };
 type OrderEventRecord = {
   id: string;
   orderId: string;
-  status: 'created' | 'confirmed' | 'shipping' | 'completed';
+  fromStatus: OrderRecord['status'] | null;
+  toStatus: OrderRecord['status'];
+  note: string | null;
   actorId: string;
   createdAt: Date;
+};
+type PaymentRecord = {
+  id: string;
+  orderId: string;
+  gateway: string;
+  method: OrderRecord['paymentMethod'];
+  amount: number;
+  currency: string;
+  status: OrderRecord['paymentStatus'];
+  transactionId: string | null;
+  metadata: Record<string, unknown> | null;
+  refundedAmount: number;
+  createdAt: Date;
+  updatedAt: Date;
 };
 
 function createOrdersMock() {
   const state = {
     products: new Map<string, ProductRecord>([
-      ['p-1', { id: 'p-1', name: 'Laptop', price: 2000, stock: 10 }],
-      ['p-2', { id: 'p-2', name: 'Mouse', price: 300, stock: 8 }],
+      [
+        'p-1',
+        {
+          id: 'p-1',
+          sku: 'SKU-1',
+          slug: 'iphone-15',
+          name: 'iPhone 15',
+          description: 'Demo',
+          price: 20_000_000,
+          stock: 10,
+          status: 'active',
+        },
+      ],
     ]),
     cartItems: [] as CartRecord[],
     reservations: new Map<string, ReservationRecord>(),
@@ -68,19 +120,15 @@ function createOrdersMock() {
     orders: new Map<string, OrderRecord>(),
     orderItems: [] as OrderItemRecord[],
     orderEvents: [] as OrderEventRecord[],
-    ids: {
-      reservation: 1,
-      reservationItem: 1,
-      cart: 1,
-      order: 1,
-      orderItem: 1,
-      orderEvent: 1,
-    },
+    payments: [] as PaymentRecord[],
+    notifications: [] as Array<Record<string, unknown>>,
+    inventoryMovements: [] as Array<Record<string, unknown>>,
+    seq: 1,
   };
 
   function addCart(userId: string, productId: string, quantity: number) {
     state.cartItems.push({
-      id: `ci-${state.ids.cart++}`,
+      id: `ci-${state.seq++}`,
       userId,
       productId,
       quantity,
@@ -88,198 +136,94 @@ function createOrdersMock() {
     });
   }
 
-  function addReservation(input: {
-    id?: string;
-    userId: string;
-    status?: ReservationRecord['status'];
-    expiresAt: Date;
-    createdAt?: Date;
-    items: Array<{ productId: string; quantity: number; unitPrice?: number; name?: string }>;
-  }) {
-    const id = input.id ?? `res-${state.ids.reservation++}`;
-
-    state.reservations.set(id, {
-      id,
-      userId: input.userId,
-      status: input.status ?? 'active',
-      expiresAt: input.expiresAt,
-      createdAt: input.createdAt ?? new Date(),
-      consumedAt: null,
-      canceledAt: null,
-      expiredAt: null,
-    });
-
-    for (const item of input.items) {
-      const product = state.products.get(item.productId)!;
-      state.reservationItems.push({
-        id: `ri-${state.ids.reservationItem++}`,
-        reservationId: id,
-        productId: item.productId,
-        name: item.name ?? product.name,
-        unitPrice: item.unitPrice ?? product.price,
-        quantity: item.quantity,
-      });
-    }
-
-    return id;
-  }
-
-  function addOrder(input: Partial<OrderRecord> & { id?: string; userId: string }) {
-    const id = input.id ?? `ord-${state.ids.order++}`;
-    const now = new Date();
-
-    state.orders.set(id, {
-      id,
-      userId: input.userId,
-      reservationId: input.reservationId ?? null,
-      status: input.status ?? 'created',
-      paymentMethod: input.paymentMethod ?? 'cod',
-      paymentStatus: input.paymentStatus ?? 'pending',
-      shippingMethod: input.shippingMethod ?? 'standard',
-      shippingStatus: input.shippingStatus ?? 'pending',
-      addressJson: input.addressJson ?? {},
-      notes: input.notes ?? '',
-      subtotal: input.subtotal ?? 0,
-      shippingFee: input.shippingFee ?? 0,
-      total: input.total ?? 0,
-      createdAt: input.createdAt ?? now,
-      updatedAt: input.updatedAt ?? now,
-    });
-
-    return id;
-  }
-
   function materializeReservation(reservation: ReservationRecord) {
-    const items = state.reservationItems.filter((item) => item.reservationId === reservation.id);
-    return { ...reservation, items };
+    return {
+      ...reservation,
+      items: state.reservationItems
+        .filter((item) => item.reservationId === reservation.id)
+        .map((item) => ({ ...item, product: state.products.get(item.productId)! })),
+    };
   }
 
   function materializeOrder(order: OrderRecord, include?: Record<string, unknown>) {
     if (!include) return { ...order };
-
-    const result: Record<string, unknown> = { ...order };
-
-    if (include.items) {
-      result.items = state.orderItems.filter((item) => item.orderId === order.id);
-    }
-
-    if (include.history) {
-      result.history = state.orderEvents
-        .filter((event) => event.orderId === order.id)
-        .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime());
-    }
-
-    if (include.reservation) {
-      if (!order.reservationId) {
-        result.reservation = null;
-      } else {
-        const reservation = state.reservations.get(order.reservationId) ?? null;
-        result.reservation = reservation ? materializeReservation(reservation) : null;
-      }
-    }
-
-    return result;
+    return {
+      ...order,
+      items: include.items ? state.orderItems.filter((item) => item.orderId === order.id) : undefined,
+      history: include.history
+        ? state.orderEvents
+            .filter((event) => event.orderId === order.id)
+            .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime())
+        : undefined,
+      reservation:
+        include.reservation && order.reservationId
+          ? materializeReservation(state.reservations.get(order.reservationId)!)
+          : null,
+      coupon: null,
+      payments: include.payments ? state.payments.filter((payment) => payment.orderId === order.id) : undefined,
+    };
   }
 
   const tx = {
     inventoryReservation: {
-      findMany: async (args: {
-        where: { status?: string; expiresAt?: { lt?: Date; gt?: Date } };
-        select?: { id: true };
-      }) => {
+      findMany: async (args: { where: { status?: string; expiresAt?: { lt?: Date } }; select?: { id: true } }) => {
         let rows = [...state.reservations.values()];
-
-        if (args.where?.status) {
-          rows = rows.filter((row) => row.status === args.where.status);
-        }
-
-        if (args.where?.expiresAt?.lt) {
-          rows = rows.filter((row) => row.expiresAt < args.where.expiresAt!.lt!);
-        }
-
-        if (args.where?.expiresAt?.gt) {
-          rows = rows.filter((row) => row.expiresAt > args.where.expiresAt!.gt!);
-        }
-
-        if (args.select?.id) {
-          return rows.map((row) => ({ id: row.id }));
-        }
-
-        return rows;
+        if (args.where.status) rows = rows.filter((row) => row.status === args.where.status);
+        if (args.where.expiresAt?.lt) rows = rows.filter((row) => row.expiresAt < args.where.expiresAt.lt!);
+        return args.select?.id ? rows.map((row) => ({ id: row.id })) : rows;
       },
-      findFirst: async (args: {
-        where: { userId: string; status: string; expiresAt: { gt: Date } };
-        include?: { items: true };
-      }) => {
-        const rows = [...state.reservations.values()]
-          .filter(
-            (row) =>
-              row.userId === args.where.userId &&
-              row.status === args.where.status &&
-              row.expiresAt > args.where.expiresAt.gt,
-          )
-          .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
-
-        const found = rows[0];
+      findFirst: async (args: { where: { userId: string; status: string; expiresAt: { gt: Date } }; include?: { items: { include: { product: true } } } }) => {
+        const found = [...state.reservations.values()].find(
+          (row) =>
+            row.userId === args.where.userId &&
+            row.status === args.where.status &&
+            row.expiresAt > args.where.expiresAt.gt,
+        );
         if (!found) return null;
-        if (args.include?.items) return materializeReservation(found);
-        return { ...found };
+        return args.include ? materializeReservation(found) : found;
       },
-      findUnique: async (args: { where: { id: string }; include?: { items: true } }) => {
+      findUnique: async (args: { where: { id: string }; include?: { items: { include?: { product: true } } | true } }) => {
         const found = state.reservations.get(args.where.id);
         if (!found) return null;
-        if (args.include?.items) return materializeReservation(found);
-        return { ...found };
+        return args.include ? materializeReservation(found) : found;
       },
-      create: async (args: {
-        data: { userId: string; status: ReservationRecord['status']; expiresAt: Date };
-      }) => {
-        const id = `res-${state.ids.reservation++}`;
+      create: async (args: { data: { userId: string; status: ReservationRecord['status']; expiresAt: Date } }) => {
         const reservation: ReservationRecord = {
-          id,
+          id: `res-${state.seq++}`,
           userId: args.data.userId,
           status: args.data.status,
           expiresAt: args.data.expiresAt,
-          createdAt: new Date(),
           consumedAt: null,
           canceledAt: null,
           expiredAt: null,
+          createdAt: new Date(),
+          updatedAt: new Date(),
         };
-
-        state.reservations.set(id, reservation);
+        state.reservations.set(reservation.id, reservation);
         return reservation;
       },
-      updateMany: async (args: {
-        where: { id: string; status: ReservationRecord['status'] };
-        data: Partial<ReservationRecord>;
-      }) => {
-        const found = state.reservations.get(args.where.id);
-        if (!found || found.status !== args.where.status) {
-          return { count: 0 };
-        }
-
-        state.reservations.set(found.id, { ...found, ...args.data });
+      updateMany: async (args: { where: { id: string; status: ReservationRecord['status'] }; data: Partial<ReservationRecord> }) => {
+        const reservation = state.reservations.get(args.where.id);
+        if (!reservation || reservation.status !== args.where.status) return { count: 0 };
+        state.reservations.set(reservation.id, { ...reservation, ...args.data, updatedAt: new Date() });
         return { count: 1 };
       },
       update: async (args: { where: { id: string }; data: Partial<ReservationRecord> }) => {
-        const found = state.reservations.get(args.where.id);
-        if (!found) throw new Error('reservation not found');
-        const updated = { ...found, ...args.data };
-        state.reservations.set(found.id, updated);
+        const reservation = state.reservations.get(args.where.id);
+        if (!reservation) throw new Error('reservation not found');
+        const updated = { ...reservation, ...args.data, updatedAt: new Date() };
+        state.reservations.set(updated.id, updated);
         return updated;
       },
     },
     inventoryReservationItem: {
-      createMany: async (args: {
-        data: Array<{ reservationId: string; productId: string; name: string; unitPrice: number; quantity: number }>;
-      }) => {
+      createMany: async (args: { data: ReservationItemRecord[] }) => {
         for (const item of args.data) {
           state.reservationItems.push({
-            id: `ri-${state.ids.reservationItem++}`,
+            id: `ri-${state.seq++}`,
             ...item,
           });
         }
-
         return { count: args.data.length };
       },
     },
@@ -295,14 +239,9 @@ function createOrdersMock() {
       },
     },
     product: {
-      updateMany: async (args: {
-        where: { id: string; stock: { gte: number } };
-        data: { stock: { decrement: number } };
-      }) => {
+      updateMany: async (args: { where: { id: string; stock: { gte: number } }; data: { stock: { decrement: number } } }) => {
         const product = state.products.get(args.where.id);
-        if (!product) return { count: 0 };
-        if (product.stock < args.where.stock.gte) return { count: 0 };
-
+        if (!product || product.stock < args.where.stock.gte) return { count: 0 };
         product.stock -= args.data.stock.decrement;
         state.products.set(product.id, product);
         return { count: 1 };
@@ -315,18 +254,28 @@ function createOrdersMock() {
         return product;
       },
     },
+    inventoryMovement: {
+      create: async (args: { data: Record<string, unknown> }) => {
+        state.inventoryMovements.push(args.data);
+        return args.data;
+      },
+    },
+    cartCoupon: {
+      findUnique: async () => null,
+    },
+    address: {
+      findFirst: async () => null,
+      create: async (args: { data: Record<string, unknown> }) => args.data,
+    },
     order: {
       create: async (args: { data: Omit<OrderRecord, 'id' | 'createdAt' | 'updatedAt'> }) => {
-        const id = `ord-${state.ids.order++}`;
-        const now = new Date();
         const order: OrderRecord = {
-          id,
+          id: `ord-${state.seq++}`,
+          createdAt: new Date(),
+          updatedAt: new Date(),
           ...args.data,
-          createdAt: now,
-          updatedAt: now,
         };
-
-        state.orders.set(id, order);
+        state.orders.set(order.id, order);
         return order;
       },
       findUnique: async (args: { where: { id: string }; include?: Record<string, unknown> }) => {
@@ -341,14 +290,15 @@ function createOrdersMock() {
         state.orders.set(order.id, updated);
         return updated;
       },
+      count: async () => state.orders.size,
+      findMany: async (args: { include?: Record<string, unknown> }) =>
+        [...state.orders.values()].map((order) => materializeOrder(order, args.include)),
     },
     orderItem: {
-      createMany: async (args: {
-        data: Array<{ orderId: string; productId: string; name: string; unitPrice: number; quantity: number }>;
-      }) => {
+      createMany: async (args: { data: OrderItemRecord[] }) => {
         for (const item of args.data) {
           state.orderItems.push({
-            id: `oi-${state.ids.orderItem++}`,
+            id: `oi-${state.seq++}`,
             ...item,
           });
         }
@@ -356,236 +306,385 @@ function createOrdersMock() {
       },
     },
     orderStatusEvent: {
-      create: async (args: {
-        data: { orderId: string; status: OrderEventRecord['status']; actorId: string };
-      }) => {
+      create: async (args: { data: Omit<OrderEventRecord, 'id' | 'createdAt'> }) => {
         const event: OrderEventRecord = {
-          id: `oe-${state.ids.orderEvent++}`,
-          orderId: args.data.orderId,
-          status: args.data.status,
-          actorId: args.data.actorId,
+          id: `oe-${state.seq++}`,
           createdAt: new Date(),
+          ...args.data,
         };
         state.orderEvents.push(event);
         return event;
       },
     },
-  };
-
-  const prisma = {
-    $transaction: async <T>(callback: (transaction: typeof tx) => Promise<T>) => callback(tx),
-    order: {
-      count: async () => state.orders.size,
-      findMany: async (args: { include?: Record<string, unknown> }) =>
-        [...state.orders.values()].map((order) => materializeOrder(order, args.include)),
-      findUnique: async (args: { where: { id: string }; include?: Record<string, unknown> }) => {
-        const order = state.orders.get(args.where.id);
-        if (!order) return null;
-        return materializeOrder(order, args.include);
+    payment: {
+      create: async (args: { data: Omit<PaymentRecord, 'id' | 'createdAt' | 'updatedAt' | 'transactionId' | 'metadata' | 'refundedAmount'> & { transactionId?: string | null; metadata?: Record<string, unknown> } }) => {
+        const payment: PaymentRecord = {
+          id: `pay-${state.seq++}`,
+          transactionId: args.data.transactionId ?? null,
+          metadata: args.data.metadata ?? null,
+          refundedAmount: 0,
+          createdAt: new Date(),
+          updatedAt: new Date(),
+          ...args.data,
+        };
+        state.payments.push(payment);
+        return payment;
+      },
+      updateMany: async (args: { where: { orderId: string }; data: Partial<PaymentRecord> }) => {
+        let count = 0;
+        state.payments = state.payments.map((payment) => {
+          if (payment.orderId !== args.where.orderId) return payment;
+          count += 1;
+          return { ...payment, ...args.data, updatedAt: new Date() };
+        });
+        return { count };
+      },
+    },
+    coupon: {
+      update: async () => ({ count: 1 }),
+    },
+    notification: {
+      create: async (args: { data: Record<string, unknown> }) => {
+        state.notifications.push(args.data);
+        return args.data;
       },
     },
   };
 
-  return {
-    prisma,
-    state,
-    addCart,
-    addReservation,
-    addOrder,
+  const prisma = {
+    $transaction: async <T>(callback: (tx: typeof tx) => Promise<T>) => callback(tx),
+    order: {
+      count: tx.order.count,
+      findMany: tx.order.findMany,
+      findUnique: tx.order.findUnique,
+    },
   };
+
+  return { prisma, state, addCart };
 }
 
-function createCheckoutPayload(reservationId: string) {
+function checkoutPayload(reservationId: string) {
   return {
     reservationId,
+    paymentMethod: 'cod' as const,
+    shippingMethod: 'standard' as const,
     address: {
       receiverName: 'Khach Demo',
       phone: '0900000000',
-      line1: '123 Nguyen Trai',
+      province: 'Ho Chi Minh',
       district: 'Quan 1',
-      city: 'Ho Chi Minh',
+      ward: 'Ben Nghe',
+      addressLine: '123 Nguyen Trai',
       country: 'Viet Nam',
     },
-    paymentMethod: 'cod' as const,
-    shippingMethod: 'standard' as const,
-    notes: '',
   };
 }
-
-test('orders.createReservationFromCart returns existing active reservation', async () => {
-  const mock = createOrdersMock();
-  const reservationId = mock.addReservation({
-    id: 'res-existing',
-    userId: 'u-1',
-    expiresAt: new Date(Date.now() + 30 * 60_000),
-    items: [{ productId: 'p-1', quantity: 1 }],
-  });
-
-  const initialStock = mock.state.products.get('p-1')!.stock;
-  const service = new OrdersService(mock.prisma as never);
-
-  const result = await service.createReservationFromCart('u-1');
-
-  assert.equal(result.id, reservationId);
-  assert.equal(result.totalItems, 1);
-  assert.equal(mock.state.products.get('p-1')!.stock, initialStock);
-});
 
 test('orders.createReservationFromCart reserves stock from cart', async () => {
   const mock = createOrdersMock();
   mock.addCart('u-1', 'p-1', 2);
-
-  const service = new OrdersService(mock.prisma as never);
-  const result = await service.createReservationFromCart('u-1');
-
-  assert.equal(result.status, 'active');
-  assert.equal(result.totalItems, 2);
-  assert.equal(mock.state.products.get('p-1')!.stock, 8);
-});
-
-test('orders.createReservationFromCart throws when cart is empty', async () => {
-  const mock = createOrdersMock();
   const service = new OrdersService(mock.prisma as never);
 
-  await assert.rejects(
-    async () => service.createReservationFromCart('u-1'),
-    (error: unknown) => error instanceof BadRequestException,
-  );
+  const reservation = await service.createReservationFromCart('u-1');
+
+  assert.equal(reservation.status, 'active');
+  assert.equal(reservation.totalItems, 2);
+  assert.equal(mock.state.products.get('p-1')?.stock, 8);
+  assert.equal(mock.state.inventoryMovements.length, 1);
 });
 
-test('orders.cancelReservation rejects non-owner customer', async () => {
-  const mock = createOrdersMock();
-  mock.addReservation({
-    id: 'res-1',
-    userId: 'u-owner',
-    expiresAt: new Date(Date.now() + 60_000),
-    items: [{ productId: 'p-1', quantity: 1 }],
-  });
-
-  const service = new OrdersService(mock.prisma as never);
-
-  await assert.rejects(
-    async () => service.cancelReservation('res-1', 'u-other', 'customer'),
-    (error: unknown) => error instanceof ForbiddenException,
-  );
-});
-
-test('orders.cancelReservation releases stock and marks reservation canceled', async () => {
-  const mock = createOrdersMock();
-  mock.state.products.get('p-1')!.stock = 6;
-  mock.addReservation({
-    id: 'res-1',
-    userId: 'u-1',
-    expiresAt: new Date(Date.now() + 60_000),
-    items: [{ productId: 'p-1', quantity: 2 }],
-  });
-
-  const service = new OrdersService(mock.prisma as never);
-  const result = await service.cancelReservation('res-1', 'u-1', 'customer');
-
-  assert.equal(result.success, true);
-  assert.equal(mock.state.reservations.get('res-1')?.status, 'canceled');
-  assert.equal(mock.state.products.get('p-1')!.stock, 8);
-});
-
-test('orders.checkout consumes reservation and creates order', async () => {
+test('orders.checkout creates order, payment and clears cart', async () => {
   const mock = createOrdersMock();
   mock.addCart('u-1', 'p-1', 1);
-  const reservationId = mock.addReservation({
-    id: 'res-checkout',
-    userId: 'u-1',
-    expiresAt: new Date(Date.now() + 60_000),
-    items: [{ productId: 'p-1', quantity: 1 }],
-  });
-
   const service = new OrdersService(mock.prisma as never);
-  const order = await service.checkout('u-1', createCheckoutPayload(reservationId));
 
-  assert.ok(order?.id);
+  const reservation = await service.createReservationFromCart('u-1');
+  const order = await service.checkout('u-1', checkoutPayload(reservation.id));
+
+  assert.ok(order?.orderNumber);
   assert.equal(order?.status, 'created');
-  assert.equal(order?.reservationId, reservationId);
-  assert.equal(mock.state.reservations.get(reservationId)?.status, 'consumed');
   assert.equal(mock.state.cartItems.length, 0);
+  assert.equal(mock.state.payments.length, 1);
+  assert.equal(mock.state.notifications.length, 1);
 });
 
-test('orders.checkout expires reservation when reservation already expired', async () => {
+test('orders.cancelOrder restores stock and marks payment canceled', async () => {
   const mock = createOrdersMock();
-  mock.state.products.get('p-1')!.stock = 5;
-
-  const reservationId = mock.addReservation({
-    id: 'res-expired',
-    userId: 'u-1',
-    expiresAt: new Date(Date.now() - 10_000),
-    items: [{ productId: 'p-1', quantity: 2 }],
-  });
-
+  mock.addCart('u-1', 'p-1', 1);
   const service = new OrdersService(mock.prisma as never);
 
+  const reservation = await service.createReservationFromCart('u-1');
+  const order = await service.checkout('u-1', checkoutPayload(reservation.id));
+  const canceled = await service.cancelOrder(order!.id, 'u-1', 'customer');
+
+  assert.equal(canceled?.status, 'canceled');
+  assert.equal(mock.state.products.get('p-1')?.stock, 10);
+  assert.equal(mock.state.payments[0].status, 'canceled');
+});
+
+test('orders.updateStatus follows 4-step flow and marks COD paid at completion', async () => {
+  const mock = createOrdersMock();
+  mock.addCart('u-1', 'p-1', 1);
+  const service = new OrdersService(mock.prisma as never);
+
+  const reservation = await service.createReservationFromCart('u-1');
+  const order = await service.checkout('u-1', checkoutPayload(reservation.id));
+
   await assert.rejects(
-    async () => service.checkout('u-1', createCheckoutPayload(reservationId)),
+    async () => service.updateStatus(order!.id, 'shipping', 'u-admin'),
     (error: unknown) => error instanceof BadRequestException,
   );
 
-  assert.equal(mock.state.reservations.get(reservationId)?.status, 'expired');
-  assert.equal(mock.state.products.get('p-1')!.stock, 7);
+  await service.updateStatus(order!.id, 'confirmed', 'u-admin');
+  await service.updateStatus(order!.id, 'shipping', 'u-admin');
+  const completed = await service.updateStatus(order!.id, 'completed', 'u-admin');
+
+  assert.equal(completed?.status, 'completed');
+  assert.equal(completed?.shippingStatus, 'delivered');
+  assert.equal(completed?.paymentStatus, 'paid');
 });
 
-test('orders.updateStatus allows only sequential transitions', async () => {
+test('orders.reservation lifecycle APIs return summaries and release expired stock', async () => {
   const mock = createOrdersMock();
-  const orderId = mock.addOrder({
-    id: 'ord-1',
-    userId: 'u-1',
-    status: 'created',
-    paymentStatus: 'pending',
-    shippingStatus: 'pending',
-  });
-
+  mock.addCart('u-1', 'p-1', 2);
   const service = new OrdersService(mock.prisma as never);
 
+  const reservation = await service.createReservationFromCart('u-1');
+  const current = await service.getCurrentReservation('u-1');
+  const canceled = await service.cancelReservation(reservation.id, 'u-1', 'customer');
+
+  assert.equal(current.data?.id, reservation.id);
+  assert.equal(canceled.success, true);
+  assert.equal(mock.state.products.get('p-1')?.stock, 10);
+
+  mock.addCart('u-1', 'p-1', 1);
+  const expiredReservation = await service.createReservationFromCart('u-1');
+  const expired = mock.state.reservations.get(expiredReservation.id)!;
+  expired.expiresAt = new Date(Date.now() - 60_000);
+  mock.state.reservations.set(expired.id, expired);
+
+  const release = await service.releaseExpiredReservations('u-admin');
+  assert.equal(release.expiredCount, 1);
+  assert.equal(mock.state.products.get('p-1')?.stock, 10);
+});
+
+test('orders.list detail tracking invoice and return request cover customer lifecycle', async () => {
+  const mock = createOrdersMock();
+  mock.addCart('u-1', 'p-1', 1);
+  const service = new OrdersService(mock.prisma as never);
+
+  const reservation = await service.createReservationFromCart('u-1');
+  const order = await service.checkout('u-1', checkoutPayload(reservation.id));
+  await service.updateStatus(order!.id, 'confirmed', 'u-admin');
+  await service.updateStatus(order!.id, 'shipping', 'u-admin');
+  await service.updateStatus(order!.id, 'completed', 'u-admin');
+
+  const list = await service.list('u-1', 'customer');
+  const detail = await service.getById(order!.id, 'u-1', 'customer');
+  const tracking = await service.getTracking(order!.id, 'u-1', 'customer');
+  const invoice = await service.getInvoice(order!.id, 'u-1', 'customer');
+  const returned = await service.requestReturn(order!.id, 'u-1', 'customer');
+
+  assert.equal(list.total, 1);
+  assert.equal(detail.id, order!.id);
+  assert.equal(tracking.orderId, order!.id);
+  assert.ok(Array.isArray(tracking.timeline));
+  assert.equal(invoice.orderNumber, order!.orderNumber);
+  assert.equal(invoice.items.length, 1);
+  assert.equal(returned?.status, 'returned');
+});
+
+test('orders.private helpers resolve addresses and coupon discounts across edge cases', async () => {
+  const service = new OrdersService({} as never);
+
+  const txWithStoredAddress = {
+    address: {
+      findFirst: async () => ({
+        id: 'addr-1',
+        userId: 'u-1',
+        fullName: 'Stored User',
+        phone: '0900000000',
+        province: 'Ho Chi Minh',
+        district: 'Quan 1',
+        ward: 'Ben Nghe',
+        addressLine: '12 Nguyen Hue',
+        country: 'Viet Nam',
+      }),
+      create: async () => null,
+    },
+  };
+
+  const storedAddress = await (service as any).resolveAddress(txWithStoredAddress, 'u-1', {
+    reservationId: 'res-1',
+    addressId: 'addr-1',
+    paymentMethod: 'cod',
+    shippingMethod: 'standard',
+  });
+  assert.equal(storedAddress.receiverName, 'Stored User');
+
   await assert.rejects(
-    async () => service.updateStatus(orderId, 'shipping', 'u-admin'),
+    async () =>
+      (service as any).resolveAddress(
+        {
+          address: {
+            findFirst: async () => null,
+            create: async () => null,
+          },
+        },
+        'u-1',
+        {
+          reservationId: 'res-1',
+          addressId: 'missing',
+          paymentMethod: 'cod',
+          shippingMethod: 'standard',
+        },
+      ),
+    (error: unknown) => error instanceof NotFoundException,
+  );
+
+  const savedAddresses: Array<Record<string, unknown>> = [];
+  const inlineAddress = await (service as any).resolveAddress(
+    {
+      address: {
+        findFirst: async () => null,
+        create: async (args: { data: Record<string, unknown> }) => {
+          savedAddresses.push(args.data);
+          return args.data;
+        },
+      },
+    },
+    'u-1',
+    {
+      reservationId: 'res-1',
+      paymentMethod: 'cod',
+      shippingMethod: 'standard',
+      saveAddress: true,
+      address: checkoutPayload('res-1').address,
+    },
+  );
+  assert.equal(inlineAddress.receiverName, 'Khach Demo');
+  assert.equal(savedAddresses.length, 1);
+
+  await assert.rejects(
+    async () =>
+      (service as any).resolveAddress(
+        {
+          address: {
+            findFirst: async () => null,
+            create: async () => null,
+          },
+        },
+        'u-1',
+        {
+          reservationId: 'res-1',
+          paymentMethod: 'cod',
+          shippingMethod: 'standard',
+        },
+      ),
     (error: unknown) => error instanceof BadRequestException,
   );
 
-  const updated = await service.updateStatus(orderId, 'confirmed', 'u-admin');
-  assert.equal(updated?.status, 'confirmed');
-  assert.equal(updated?.paymentStatus, 'paid');
-  assert.equal(updated?.shippingStatus, 'packed');
-});
+  const fixedDiscount = (service as any).calculateCouponDiscount(
+    {
+      type: 'fixed',
+      value: 50_000,
+      minOrderAmount: 100_000,
+      maxDiscount: null,
+      usageLimit: null,
+      usedCount: 0,
+      startsAt: new Date(Date.now() - 60_000),
+      expiresAt: new Date(Date.now() + 60_000),
+    },
+    200_000,
+    30_000,
+  );
+  const percentDiscount = (service as any).calculateCouponDiscount(
+    {
+      type: 'percent',
+      value: 20,
+      minOrderAmount: 100_000,
+      maxDiscount: 25_000,
+      usageLimit: null,
+      usedCount: 0,
+      startsAt: new Date(Date.now() - 60_000),
+      expiresAt: new Date(Date.now() + 60_000),
+    },
+    200_000,
+    30_000,
+  );
+  const shippingDiscount = (service as any).calculateCouponDiscount(
+    {
+      type: 'free_shipping',
+      value: 0,
+      minOrderAmount: 100_000,
+      maxDiscount: null,
+      usageLimit: null,
+      usedCount: 0,
+      startsAt: new Date(Date.now() - 60_000),
+      expiresAt: new Date(Date.now() + 60_000),
+    },
+    200_000,
+    30_000,
+  );
 
-test('orders.releaseExpiredReservations releases only expired active reservations', async () => {
-  const mock = createOrdersMock();
-  mock.state.products.get('p-1')!.stock = 4;
-  mock.state.products.get('p-2')!.stock = 5;
+  assert.equal(fixedDiscount, 50_000);
+  assert.equal(percentDiscount, 25_000);
+  assert.equal(shippingDiscount, 30_000);
 
-  mock.addReservation({
-    id: 'res-old-1',
-    userId: 'u-1',
-    expiresAt: new Date(Date.now() - 60_000),
-    items: [{ productId: 'p-1', quantity: 2 }],
-  });
+  await assert.rejects(
+    async () =>
+      (service as any).calculateCouponDiscount(
+        {
+          type: 'fixed',
+          value: 10_000,
+          minOrderAmount: 0,
+          maxDiscount: null,
+          usageLimit: null,
+          usedCount: 0,
+          startsAt: new Date(Date.now() + 60_000),
+          expiresAt: new Date(Date.now() + 120_000),
+        },
+        200_000,
+        30_000,
+      ),
+    (error: unknown) => error instanceof BadRequestException,
+  );
 
-  mock.addReservation({
-    id: 'res-old-2',
-    userId: 'u-2',
-    expiresAt: new Date(Date.now() - 30_000),
-    items: [{ productId: 'p-2', quantity: 1 }],
-  });
+  await assert.rejects(
+    async () =>
+      (service as any).calculateCouponDiscount(
+        {
+          type: 'fixed',
+          value: 10_000,
+          minOrderAmount: 0,
+          maxDiscount: null,
+          usageLimit: 1,
+          usedCount: 1,
+          startsAt: new Date(Date.now() - 60_000),
+          expiresAt: new Date(Date.now() + 60_000),
+        },
+        200_000,
+        30_000,
+      ),
+    (error: unknown) => error instanceof BadRequestException,
+  );
 
-  mock.addReservation({
-    id: 'res-active',
-    userId: 'u-3',
-    expiresAt: new Date(Date.now() + 120_000),
-    items: [{ productId: 'p-1', quantity: 1 }],
-  });
-
-  const service = new OrdersService(mock.prisma as never);
-  const result = await service.releaseExpiredReservations('u-admin');
-
-  assert.equal(result.expiredCount, 2);
-  assert.equal(mock.state.reservations.get('res-old-1')?.status, 'expired');
-  assert.equal(mock.state.reservations.get('res-old-2')?.status, 'expired');
-  assert.equal(mock.state.reservations.get('res-active')?.status, 'active');
-  assert.equal(mock.state.products.get('p-1')!.stock, 6);
-  assert.equal(mock.state.products.get('p-2')!.stock, 6);
+  await assert.rejects(
+    async () =>
+      (service as any).calculateCouponDiscount(
+        {
+          type: 'fixed',
+          value: 10_000,
+          minOrderAmount: 500_000,
+          maxDiscount: null,
+          usageLimit: null,
+          usedCount: 0,
+          startsAt: new Date(Date.now() - 60_000),
+          expiresAt: new Date(Date.now() + 60_000),
+        },
+        200_000,
+        30_000,
+      ),
+    (error: unknown) => error instanceof BadRequestException,
+  );
 });

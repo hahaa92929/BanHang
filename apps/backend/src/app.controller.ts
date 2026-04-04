@@ -1,9 +1,9 @@
 import { Controller, Get } from '@nestjs/common';
 
-@Controller('api/health')
+@Controller('health')
 export class AppController {
   @Get()
   health() {
-    return { status: 'ok', service: 'banhang-nest', time: new Date().toISOString() };
+    return { status: 'ok', service: 'banhang-backend', time: new Date().toISOString() };
   }
 }

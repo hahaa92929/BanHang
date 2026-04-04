@@ -3,28 +3,47 @@ import {
   ForbiddenException,
   Injectable,
   NotFoundException,
+  Optional,
 } from '@nestjs/common';
 import {
+  Coupon,
   OrderStatus,
+  PaymentMethod,
   PaymentStatus,
   Prisma,
   ReservationStatus,
+  ShippingMethod,
   ShippingStatus,
-  UserRole,
 } from '@prisma/client';
+import { ConfigService } from '@nestjs/config';
+import { generateId } from '../../common/security';
+import { AppEnv } from '../../config/env';
 import { PrismaService } from '../../infra/prisma/prisma.service';
 import { CheckoutDto } from './dto/checkout.dto';
 
+type ActorRole = 'super_admin' | 'admin' | 'manager' | 'staff' | 'customer' | 'guest';
+
 @Injectable()
 export class OrdersService {
-  private readonly shippingFeeMap: Record<'standard' | 'express', number> = {
-    standard: 30000,
-    express: 60000,
+  private readonly shippingFeeMap: Record<ShippingMethod, number> = {
+    standard: 30_000,
+    express: 60_000,
+    same_day: 90_000,
+    pickup: 0,
   };
 
-  private readonly reservationTtlMinutes = Number(process.env.RESERVATION_TTL_MINUTES || '15');
+  private readonly reservationTtlMinutes: number;
 
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    @Optional() private readonly config?: ConfigService<AppEnv, true>,
+  ) {
+    this.reservationTtlMinutes = Number(
+      this.config?.get('RESERVATION_TTL_MINUTES', { infer: true }) ??
+        process.env.RESERVATION_TTL_MINUTES ??
+        15,
+    );
+  }
 
   async getCurrentReservation(userId: string) {
     return this.prisma.$transaction(async (tx) => {
@@ -36,7 +55,11 @@ export class OrdersService {
           status: 'active',
           expiresAt: { gt: new Date() },
         },
-        include: { items: true },
+        include: {
+          items: {
+            include: { product: true },
+          },
+        },
         orderBy: { createdAt: 'desc' },
       });
 
@@ -56,7 +79,11 @@ export class OrdersService {
           status: 'active',
           expiresAt: { gt: new Date() },
         },
-        include: { items: true },
+        include: {
+          items: {
+            include: { product: true },
+          },
+        },
         orderBy: { createdAt: 'desc' },
       });
 
@@ -74,6 +101,10 @@ export class OrdersService {
       }
 
       for (const row of cartRows) {
+        if (row.product.status !== 'active') {
+          throw new BadRequestException(`${row.product.name} is not available`);
+        }
+
         if (row.quantity > row.product.stock) {
           throw new BadRequestException(`Stock is not enough for ${row.product.name}`);
         }
@@ -93,6 +124,16 @@ export class OrdersService {
         if (updated.count !== 1) {
           throw new BadRequestException(`Stock conflict for ${row.product.name}`);
         }
+
+        await tx.inventoryMovement.create({
+          data: {
+            productId: row.productId,
+            actorId: userId,
+            type: 'reserve',
+            quantity: row.quantity,
+            note: 'Reserved from cart checkout flow',
+          },
+        });
       }
 
       const expiresAt = new Date(Date.now() + this.reservationTtlMinutes * 60 * 1000);
@@ -117,7 +158,11 @@ export class OrdersService {
 
       const reservationWithItems = await tx.inventoryReservation.findUnique({
         where: { id: reservation.id },
-        include: { items: true },
+        include: {
+          items: {
+            include: { product: true },
+          },
+        },
       });
 
       if (!reservationWithItems) {
@@ -128,7 +173,7 @@ export class OrdersService {
     });
   }
 
-  async cancelReservation(id: string, userId: string, role: UserRole) {
+  async cancelReservation(id: string, userId: string, role: ActorRole) {
     return this.prisma.$transaction(async (tx) => {
       await this.releaseExpiredInTx(tx);
 
@@ -141,7 +186,7 @@ export class OrdersService {
         throw new NotFoundException('Reservation not found');
       }
 
-      if (role !== 'admin' && reservation.userId !== userId) {
+      if (!this.canManageAllOrders(role) && reservation.userId !== userId) {
         throw new ForbiddenException('Cannot cancel this reservation');
       }
 
@@ -171,6 +216,16 @@ export class OrdersService {
             stock: { increment: item.quantity },
           },
         });
+
+        await tx.inventoryMovement.create({
+          data: {
+            productId: item.productId,
+            actorId: userId,
+            type: 'release',
+            quantity: item.quantity,
+            note: 'Reservation canceled',
+          },
+        });
       }
 
       return {
@@ -180,55 +235,39 @@ export class OrdersService {
     });
   }
 
-  async releaseExpiredReservations(_actorUserId: string) {
+  async releaseExpiredReservations(actorUserId: string) {
     return this.prisma.$transaction(async (tx) => {
-      const expiredCount = await this.releaseExpiredInTx(tx);
+      const expiredCount = await this.releaseExpiredInTx(tx, actorUserId);
       return { expiredCount };
     });
   }
 
-  async list(userId: string, role: UserRole) {
-    const where: Prisma.OrderWhereInput = role === 'admin' ? {} : { userId };
+  async list(userId: string, role: ActorRole) {
+    const where: Prisma.OrderWhereInput = this.canManageAllOrders(role) ? {} : { userId };
 
     const [total, data] = await Promise.all([
       this.prisma.order.count({ where }),
       this.prisma.order.findMany({
         where,
         orderBy: { createdAt: 'desc' },
-        include: {
-          items: true,
-          history: {
-            orderBy: { createdAt: 'asc' },
-          },
-          reservation: {
-            include: { items: true },
-          },
-        },
+        include: this.orderInclude(),
       }),
     ]);
 
     return { total, data };
   }
 
-  async getById(id: string, userId: string, role: UserRole) {
+  async getById(id: string, userId: string, role: ActorRole) {
     const order = await this.prisma.order.findUnique({
       where: { id },
-      include: {
-        items: true,
-        history: {
-          orderBy: { createdAt: 'asc' },
-        },
-        reservation: {
-          include: { items: true },
-        },
-      },
+      include: this.orderInclude(),
     });
 
     if (!order) {
       throw new NotFoundException('Order not found');
     }
 
-    if (role !== 'admin' && order.userId !== userId) {
+    if (!this.canManageAllOrders(role) && order.userId !== userId) {
       throw new ForbiddenException('Cannot access this order');
     }
 
@@ -241,7 +280,11 @@ export class OrdersService {
 
       const reservation = await tx.inventoryReservation.findUnique({
         where: { id: payload.reservationId },
-        include: { items: true },
+        include: {
+          items: {
+            include: { product: true },
+          },
+        },
       });
 
       if (!reservation) {
@@ -257,7 +300,7 @@ export class OrdersService {
       }
 
       if (reservation.expiresAt.getTime() < Date.now()) {
-        await this.expireReservationInTx(tx, reservation.id);
+        await this.expireReservationInTx(tx, reservation.id, userId);
         throw new BadRequestException('Reservation expired');
       }
 
@@ -270,32 +313,40 @@ export class OrdersService {
         0,
       );
       const shippingFee = this.shippingFeeMap[payload.shippingMethod];
-      const total = subtotal + shippingFee;
+      const cartCoupon = await tx.cartCoupon.findUnique({
+        where: { userId },
+        include: { coupon: true },
+      });
+      const discountAmount = cartCoupon
+        ? this.calculateCouponDiscount(cartCoupon.coupon, subtotal, shippingFee)
+        : 0;
+      const taxAmount = 0;
+      const total = Math.max(0, subtotal + shippingFee + taxAmount - discountAmount);
       const paymentStatus: PaymentStatus =
         payload.paymentMethod === 'cod' ? 'pending' : 'authorized';
-      const shippingStatus: ShippingStatus = 'pending';
+      const shippingStatus: ShippingStatus =
+        payload.shippingMethod === 'pickup' ? 'packed' : 'pending';
+      const addressJson = await this.resolveAddress(tx, userId, payload);
 
       const order = await tx.order.create({
         data: {
           userId,
+          orderNumber: this.generateOrderNumber(),
           reservationId: reservation.id,
+          couponId: cartCoupon?.couponId,
           status: 'created',
           paymentMethod: payload.paymentMethod,
           paymentStatus,
           shippingMethod: payload.shippingMethod,
           shippingStatus,
-          addressJson: {
-            receiverName: payload.address.receiverName,
-            phone: payload.address.phone,
-            line1: payload.address.line1,
-            district: payload.address.district,
-            city: payload.address.city,
-            country: payload.address.country,
-          },
+          addressJson,
           notes: payload.notes ?? '',
           subtotal,
+          discountAmount,
+          taxAmount,
           shippingFee,
           total,
+          trackingCode: payload.shippingMethod === 'pickup' ? null : this.generateTrackingCode(),
         },
       });
 
@@ -303,17 +354,35 @@ export class OrdersService {
         data: reservation.items.map((item) => ({
           orderId: order.id,
           productId: item.productId,
+          sku: item.product.sku,
           name: item.name,
           unitPrice: item.unitPrice,
           quantity: item.quantity,
+          totalPrice: item.unitPrice * item.quantity,
         })),
       });
 
       await tx.orderStatusEvent.create({
         data: {
           orderId: order.id,
-          status: 'created',
+          fromStatus: null,
+          toStatus: 'created',
           actorId: userId,
+          note: 'Order created from checkout',
+        },
+      });
+
+      await tx.payment.create({
+        data: {
+          orderId: order.id,
+          gateway: this.resolveGateway(payload.paymentMethod),
+          method: payload.paymentMethod,
+          amount: total,
+          currency: 'VND',
+          status: paymentStatus,
+          metadata: {
+            reservationId: reservation.id,
+          },
         },
       });
 
@@ -325,19 +394,33 @@ export class OrdersService {
         },
       });
 
+      if (cartCoupon) {
+        await tx.coupon.update({
+          where: { id: cartCoupon.couponId },
+          data: { usedCount: { increment: 1 } },
+        });
+
+        await tx.cartCoupon.delete({ where: { userId } });
+      }
+
       await tx.cartItem.deleteMany({ where: { userId } });
+
+      await tx.notification.create({
+        data: {
+          userId,
+          type: 'order',
+          title: 'Order created',
+          content: `Order ${order.orderNumber} has been created successfully.`,
+          data: {
+            orderId: order.id,
+            orderNumber: order.orderNumber,
+          },
+        },
+      });
 
       return tx.order.findUnique({
         where: { id: order.id },
-        include: {
-          items: true,
-          history: {
-            orderBy: { createdAt: 'asc' },
-          },
-          reservation: {
-            include: { items: true },
-          },
-        },
+        include: this.orderInclude(),
       });
     });
   }
@@ -348,7 +431,12 @@ export class OrdersService {
     actorUserId: string,
   ) {
     return this.prisma.$transaction(async (tx) => {
-      const order = await tx.order.findUnique({ where: { id } });
+      const order = await tx.order.findUnique({
+        where: { id },
+        include: {
+          payments: true,
+        },
+      });
 
       if (!order) {
         throw new NotFoundException('Order not found');
@@ -358,60 +446,266 @@ export class OrdersService {
       const currentIndex = flow.indexOf(order.status);
       const nextIndex = flow.indexOf(nextStatus);
 
-      if (nextIndex !== currentIndex + 1) {
+      if (currentIndex === -1 || nextIndex !== currentIndex + 1) {
         throw new BadRequestException('Order status must follow 4-step flow');
       }
 
       let paymentStatus: PaymentStatus = order.paymentStatus;
       let shippingStatus: ShippingStatus = order.shippingStatus;
+      const now = new Date();
+      const data: Prisma.OrderUpdateInput = {
+        status: nextStatus,
+      };
 
       if (nextStatus === 'confirmed') {
-        paymentStatus = 'paid';
-        shippingStatus = 'packed';
+        shippingStatus = order.shippingMethod === 'pickup' ? 'packed' : 'packed';
+        data.confirmedAt = now;
       }
 
       if (nextStatus === 'shipping') {
-        shippingStatus = 'in_transit';
+        shippingStatus = order.shippingMethod === 'pickup' ? 'packed' : 'in_transit';
+        data.shippedAt = now;
       }
 
       if (nextStatus === 'completed') {
-        paymentStatus = 'paid';
         shippingStatus = 'delivered';
+        data.deliveredAt = now;
+        data.completedAt = now;
+
+        if (order.paymentMethod === 'cod' && order.paymentStatus === 'pending') {
+          paymentStatus = 'paid';
+        }
+      }
+
+      data.paymentStatus = paymentStatus;
+      data.shippingStatus = shippingStatus;
+
+      await tx.order.update({
+        where: { id },
+        data,
+      });
+
+      if (nextStatus === 'completed' && paymentStatus === 'paid') {
+        await tx.payment.updateMany({
+          where: { orderId: id },
+          data: { status: 'paid' },
+        });
+      }
+
+      await tx.orderStatusEvent.create({
+        data: {
+          orderId: id,
+          fromStatus: order.status,
+          toStatus: nextStatus,
+          actorId: actorUserId,
+        },
+      });
+
+      await tx.notification.create({
+        data: {
+          userId: order.userId,
+          type: 'order',
+          title: 'Order updated',
+          content: `Order ${order.orderNumber} is now ${nextStatus}.`,
+          data: {
+            orderId: order.id,
+            status: nextStatus,
+          },
+        },
+      });
+
+      return tx.order.findUnique({
+        where: { id },
+        include: this.orderInclude(),
+      });
+    });
+  }
+
+  async cancelOrder(id: string, userId: string, role: ActorRole, note?: string) {
+    return this.prisma.$transaction(async (tx) => {
+      const order = await tx.order.findUnique({
+        where: { id },
+        include: {
+          items: true,
+          payments: true,
+        },
+      });
+
+      if (!order) {
+        throw new NotFoundException('Order not found');
+      }
+
+      if (!this.canManageAllOrders(role) && order.userId !== userId) {
+        throw new ForbiddenException('Cannot cancel this order');
+      }
+
+      if (!['created', 'confirmed'].includes(order.status)) {
+        throw new BadRequestException('Only newly created orders can be canceled');
+      }
+
+      const nextPaymentStatus: PaymentStatus =
+        order.paymentStatus === 'paid' ? 'refunded' : 'canceled';
+
+      await tx.order.update({
+        where: { id },
+        data: {
+          status: 'canceled',
+          paymentStatus: nextPaymentStatus,
+          shippingStatus: 'canceled',
+          canceledAt: new Date(),
+        },
+      });
+
+      await tx.payment.updateMany({
+        where: { orderId: id },
+        data: {
+          status: nextPaymentStatus,
+          refundedAmount: nextPaymentStatus === 'refunded' ? order.total : 0,
+        },
+      });
+
+      for (const item of order.items) {
+        await tx.product.update({
+          where: { id: item.productId },
+          data: {
+            stock: { increment: item.quantity },
+          },
+        });
+
+        await tx.inventoryMovement.create({
+          data: {
+            productId: item.productId,
+            actorId: userId,
+            type: 'release',
+            quantity: item.quantity,
+            note: 'Order canceled and stock restored',
+          },
+        });
+      }
+
+      await tx.orderStatusEvent.create({
+        data: {
+          orderId: id,
+          fromStatus: order.status,
+          toStatus: 'canceled',
+          actorId: userId,
+          note: note ?? 'Order canceled',
+        },
+      });
+
+      await tx.notification.create({
+        data: {
+          userId: order.userId,
+          type: 'order',
+          title: 'Order canceled',
+          content: `Order ${order.orderNumber} has been canceled.`,
+          data: {
+            orderId: order.id,
+          },
+        },
+      });
+
+      return tx.order.findUnique({
+        where: { id },
+        include: this.orderInclude(),
+      });
+    });
+  }
+
+  async requestReturn(id: string, userId: string, role: ActorRole, note?: string) {
+    return this.prisma.$transaction(async (tx) => {
+      const order = await tx.order.findUnique({ where: { id } });
+
+      if (!order) {
+        throw new NotFoundException('Order not found');
+      }
+
+      if (!this.canManageAllOrders(role) && order.userId !== userId) {
+        throw new ForbiddenException('Cannot return this order');
+      }
+
+      if (order.status !== 'completed') {
+        throw new BadRequestException('Only completed orders can be returned');
       }
 
       await tx.order.update({
         where: { id },
         data: {
-          status: nextStatus,
-          paymentStatus,
-          shippingStatus,
+          status: 'returned',
+          shippingStatus: 'returned',
+          returnedAt: new Date(),
         },
       });
 
       await tx.orderStatusEvent.create({
         data: {
           orderId: id,
-          status: nextStatus,
-          actorId: actorUserId,
+          fromStatus: order.status,
+          toStatus: 'returned',
+          actorId: userId,
+          note: note ?? 'Return requested',
+        },
+      });
+
+      await tx.notification.create({
+        data: {
+          userId: order.userId,
+          type: 'order',
+          title: 'Return requested',
+          content: `Return requested for order ${order.orderNumber}.`,
+          data: {
+            orderId: order.id,
+          },
         },
       });
 
       return tx.order.findUnique({
         where: { id },
-        include: {
-          items: true,
-          history: {
-            orderBy: { createdAt: 'asc' },
-          },
-          reservation: {
-            include: { items: true },
-          },
-        },
+        include: this.orderInclude(),
       });
     });
   }
 
-  private async releaseExpiredInTx(tx: Prisma.TransactionClient) {
+  async getTracking(id: string, userId: string, role: ActorRole) {
+    const order = await this.getById(id, userId, role);
+    return {
+      orderId: order.id,
+      orderNumber: order.orderNumber,
+      trackingCode: order.trackingCode,
+      shippingStatus: order.shippingStatus,
+      timeline: order.history.map((item) => ({
+        fromStatus: item.fromStatus,
+        toStatus: item.toStatus,
+        note: item.note,
+        createdAt: item.createdAt,
+      })),
+    };
+  }
+
+  async getInvoice(id: string, userId: string, role: ActorRole) {
+    const order = await this.getById(id, userId, role);
+    return {
+      invoiceNumber: `INV-${order.orderNumber}`,
+      orderNumber: order.orderNumber,
+      issuedAt: order.createdAt,
+      currency: order.currency,
+      subtotal: order.subtotal,
+      discountAmount: order.discountAmount,
+      shippingFee: order.shippingFee,
+      taxAmount: order.taxAmount,
+      total: order.total,
+      items: order.items.map((item) => ({
+        sku: item.sku,
+        name: item.name,
+        quantity: item.quantity,
+        unitPrice: item.unitPrice,
+        totalPrice: item.totalPrice,
+      })),
+      shippingAddress: order.addressJson,
+    };
+  }
+
+  private async releaseExpiredInTx(tx: Prisma.TransactionClient, actorUserId = 'system') {
     const expiredReservations = await tx.inventoryReservation.findMany({
       where: {
         status: 'active',
@@ -423,7 +717,7 @@ export class OrdersService {
     let expiredCount = 0;
 
     for (const reservation of expiredReservations) {
-      const expired = await this.expireReservationInTx(tx, reservation.id);
+      const expired = await this.expireReservationInTx(tx, reservation.id, actorUserId);
       if (expired) {
         expiredCount += 1;
       }
@@ -432,7 +726,11 @@ export class OrdersService {
     return expiredCount;
   }
 
-  private async expireReservationInTx(tx: Prisma.TransactionClient, reservationId: string) {
+  private async expireReservationInTx(
+    tx: Prisma.TransactionClient,
+    reservationId: string,
+    actorUserId: string,
+  ) {
     const reservation = await tx.inventoryReservation.findUnique({
       where: { id: reservationId },
       include: { items: true },
@@ -464,9 +762,146 @@ export class OrdersService {
           stock: { increment: item.quantity },
         },
       });
+
+      await tx.inventoryMovement.create({
+        data: {
+          productId: item.productId,
+          actorId: actorUserId,
+          type: 'release',
+          quantity: item.quantity,
+          note: 'Expired reservation released',
+        },
+      });
     }
 
     return true;
+  }
+
+  private async resolveAddress(
+    tx: Prisma.TransactionClient,
+    userId: string,
+    payload: CheckoutDto,
+  ) {
+    if (payload.addressId) {
+      const address = await tx.address.findFirst({
+        where: {
+          id: payload.addressId,
+          userId,
+        },
+      });
+
+      if (!address) {
+        throw new NotFoundException('Address not found');
+      }
+
+      return {
+        receiverName: address.fullName,
+        phone: address.phone,
+        province: address.province,
+        district: address.district,
+        ward: address.ward,
+        addressLine: address.addressLine,
+        country: address.country,
+      };
+    }
+
+    if (!payload.address) {
+      throw new BadRequestException('Address is required');
+    }
+
+    if (payload.saveAddress) {
+      await tx.address.create({
+        data: {
+          userId,
+          fullName: payload.address.receiverName,
+          phone: payload.address.phone,
+          province: payload.address.province,
+          district: payload.address.district,
+          ward: payload.address.ward,
+          addressLine: payload.address.addressLine,
+          country: payload.address.country,
+        },
+      });
+    }
+
+    return {
+      receiverName: payload.address.receiverName,
+      phone: payload.address.phone,
+      province: payload.address.province,
+      district: payload.address.district,
+      ward: payload.address.ward,
+      addressLine: payload.address.addressLine,
+      country: payload.address.country,
+    };
+  }
+
+  private calculateCouponDiscount(coupon: Coupon, subtotal: number, shippingFee: number) {
+    const now = Date.now();
+
+    if (coupon.startsAt.getTime() > now || coupon.expiresAt.getTime() < now) {
+      throw new BadRequestException('Coupon is expired or not active yet');
+    }
+
+    if (coupon.usageLimit !== null && coupon.usedCount >= coupon.usageLimit) {
+      throw new BadRequestException('Coupon usage limit exceeded');
+    }
+
+    if (subtotal < coupon.minOrderAmount) {
+      throw new BadRequestException('Cart subtotal does not meet coupon minimum');
+    }
+
+    switch (coupon.type) {
+      case 'fixed':
+        return Math.min(subtotal, coupon.value);
+      case 'percent': {
+        const raw = Math.floor((subtotal * coupon.value) / 100);
+        return coupon.maxDiscount ? Math.min(raw, coupon.maxDiscount) : raw;
+      }
+      case 'free_shipping':
+      default:
+        return shippingFee;
+    }
+  }
+
+  private resolveGateway(paymentMethod: PaymentMethod) {
+    if (paymentMethod === 'cod') {
+      return 'offline';
+    }
+
+    return paymentMethod;
+  }
+
+  private canManageAllOrders(role: ActorRole) {
+    return ['super_admin', 'admin', 'manager', 'staff'].includes(role);
+  }
+
+  private orderInclude() {
+    return {
+      items: true,
+      history: {
+        orderBy: { createdAt: 'asc' as const },
+      },
+      reservation: {
+        include: { items: true },
+      },
+      coupon: true,
+      payments: {
+        orderBy: { createdAt: 'asc' as const },
+      },
+    };
+  }
+
+  private generateOrderNumber() {
+    const now = new Date();
+    const date =
+      now.getFullYear().toString() +
+      `${now.getMonth() + 1}`.padStart(2, '0') +
+      `${now.getDate()}`.padStart(2, '0');
+    return `ORD-${date}-${generateId('ord').slice(-8).toUpperCase()}`;
+  }
+
+  private generateTrackingCode() {
+    return `TRK-${generateId('trk').slice(-8).toUpperCase()}`;
   }
 
   private toReservationSummary(
@@ -474,7 +909,12 @@ export class OrdersService {
       id: string;
       status: ReservationStatus;
       expiresAt: Date;
-      items: Array<{ productId: string; name: string; unitPrice: number; quantity: number }>;
+      items: Array<{
+        productId: string;
+        name: string;
+        unitPrice: number;
+        quantity: number;
+      }>;
     },
   ) {
     const subtotal = reservation.items.reduce(
@@ -489,7 +929,12 @@ export class OrdersService {
       expiresAt: reservation.expiresAt,
       subtotal,
       totalItems,
-      items: reservation.items,
+      items: reservation.items.map((item) => ({
+        productId: item.productId,
+        name: item.name,
+        unitPrice: item.unitPrice,
+        quantity: item.quantity,
+      })),
     };
   }
 }

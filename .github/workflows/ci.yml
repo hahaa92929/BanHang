@@ -8,14 +8,46 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: banhang
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d banhang"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
     env:
+      NODE_ENV: test
+      PORT: 4000
       DATABASE_URL: postgresql://postgres:postgres@localhost:5432/banhang?schema=public
+      JWT_SECRET: ci-jwt-secret-change-me-1234567890
+      TOKEN_HASH_SECRET: ci-token-hash-secret-change-me-1234567890
+      PAYMENT_WEBHOOK_SECRET: ci-payment-webhook-secret-change-me-1234567890
+      JWT_ACCESS_TTL_SEC: 3600
+      JWT_REFRESH_TTL_SEC: 604800
+      RESERVATION_TTL_MINUTES: 15
+      RESET_PASSWORD_TTL_MINUTES: 30
+      EMAIL_VERIFICATION_TTL_HOURS: 24
+      APP_ORIGINS: http://127.0.0.1:3000,http://localhost:3000
+      NEXT_PUBLIC_API_URL: http://127.0.0.1:4000/api/v1
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 20
+          cache: npm
       - run: npm ci
       - run: npm run db:generate
-      - run: npm run test:backend
+      - run: npm run typecheck:backend
+      - run: npm run test:backend:coverage
       - run: npm run build
+      - run: npm run e2e:install
+      - run: npm run e2e:prepare
+      - run: npm run e2e
+      - run: npm audit --omit=dev --audit-level=critical

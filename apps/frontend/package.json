@@ -4,11 +4,11 @@
   "private": true,
   "scripts": {
     "dev": "next dev",
-    "build": "next build",
+    "build": "node -e \"require('fs').rmSync('.next', { recursive: true, force: true })\" && next build",
     "start": "next start"
   },
   "dependencies": {
-    "next": "15.3.1",
+    "next": "15.5.14",
     "react": "19.1.0",
     "react-dom": "19.1.0"
   },

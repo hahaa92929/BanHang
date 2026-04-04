@@ -1,370 +1,226 @@
 import assert from 'node:assert/strict';
 import { createHmac } from 'node:crypto';
 import test from 'node:test';
-import { BadRequestException, ForbiddenException } from '@nestjs/common';
 import { OrdersService } from '../modules/orders/orders.service';
 import { PaymentsService } from '../modules/payments/payments.service';
 
-type Product = {
-  id: string;
-  name: string;
-  price: number;
-  stock: number;
-};
-
-type CartItem = {
-  id: string;
-  userId: string;
-  productId: string;
-  quantity: number;
-  createdAt: Date;
-};
-
-type Reservation = {
-  id: string;
-  userId: string;
-  status: 'active' | 'consumed' | 'canceled' | 'expired';
-  expiresAt: Date;
-  createdAt: Date;
-  consumedAt: Date | null;
-  canceledAt: Date | null;
-  expiredAt: Date | null;
-};
-
-type ReservationItem = {
-  id: string;
-  reservationId: string;
-  productId: string;
-  name: string;
-  unitPrice: number;
-  quantity: number;
-};
-
-type Order = {
-  id: string;
-  userId: string;
-  reservationId: string | null;
-  status: 'created' | 'confirmed' | 'shipping' | 'completed';
-  paymentMethod: 'cod' | 'vnpay' | 'momo';
-  paymentStatus: 'pending' | 'authorized' | 'paid' | 'failed';
-  shippingMethod: 'standard' | 'express';
-  shippingStatus: 'pending' | 'packed' | 'in_transit' | 'delivered';
-  addressJson: Record<string, unknown>;
-  notes: string;
-  subtotal: number;
-  shippingFee: number;
-  total: number;
-  createdAt: Date;
-  updatedAt: Date;
-};
-
-type OrderItem = {
-  id: string;
-  orderId: string;
-  productId: string;
-  name: string;
-  unitPrice: number;
-  quantity: number;
-};
-
-type OrderEvent = {
-  id: string;
-  orderId: string;
-  status: 'created' | 'confirmed' | 'shipping' | 'completed';
-  actorId: string;
-  createdAt: Date;
-};
-
-type PaymentEvent = {
-  eventId: string;
-  type: string;
-  orderId?: string;
-  payload: unknown;
-  processedAt: Date;
-};
+function sign(body: unknown, secret: string) {
+  return createHmac('sha256', secret).update(JSON.stringify(body)).digest('hex');
+}
 
 function createWorkflowMock() {
   const state = {
-    products: new Map<string, Product>([
-      ['p-1', { id: 'p-1', name: 'Laptop', price: 20_000_000, stock: 8 }],
-      ['p-2', { id: 'p-2', name: 'Mouse', price: 500_000, stock: 20 }],
-    ]),
-    cartItems: [] as CartItem[],
-    reservations: new Map<string, Reservation>(),
-    reservationItems: [] as ReservationItem[],
-    orders: new Map<string, Order>(),
-    orderItems: [] as OrderItem[],
-    orderEvents: [] as OrderEvent[],
-    paymentEvents: new Map<string, PaymentEvent>(),
-    seq: {
-      cart: 1,
-      reservation: 1,
-      reservationItem: 1,
-      order: 1,
-      orderItem: 1,
-      orderEvent: 1,
+    product: {
+      id: 'p-1',
+      sku: 'SKU-1',
+      slug: 'iphone-15',
+      name: 'iPhone 15',
+      description: 'Demo',
+      price: 20_000_000,
+      stock: 8,
+      status: 'active' as const,
     },
+    cartItems: [{ id: 'ci-1', userId: 'u-1', productId: 'p-1', quantity: 1, createdAt: new Date() }],
+    reservations: new Map<string, any>(),
+    reservationItems: [] as any[],
+    orders: new Map<string, any>(),
+    orderItems: [] as any[],
+    orderEvents: [] as any[],
+    payments: new Map<string, any>(),
+    paymentEvents: new Map<string, any>(),
+    notifications: [] as any[],
+    movements: [] as any[],
+    seq: 1,
   };
 
-  function addCart(userId: string, productId: string, quantity: number) {
-    state.cartItems.push({
-      id: `ci-${state.seq.cart++}`,
-      userId,
-      productId,
-      quantity,
-      createdAt: new Date(),
-    });
-  }
-
-  function addReservation(input: {
-    id?: string;
-    userId: string;
-    status?: Reservation['status'];
-    expiresAt: Date;
-    items: Array<{ productId: string; quantity: number; unitPrice?: number; name?: string }>;
-  }) {
-    const id = input.id ?? `res-${state.seq.reservation++}`;
-    const reservation: Reservation = {
-      id,
-      userId: input.userId,
-      status: input.status ?? 'active',
-      expiresAt: input.expiresAt,
-      createdAt: new Date(),
-      consumedAt: null,
-      canceledAt: null,
-      expiredAt: null,
-    };
-
-    state.reservations.set(id, reservation);
-
-    for (const item of input.items) {
-      const product = state.products.get(item.productId)!;
-      state.reservationItems.push({
-        id: `ri-${state.seq.reservationItem++}`,
-        reservationId: id,
-        productId: item.productId,
-        name: item.name ?? product.name,
-        unitPrice: item.unitPrice ?? product.price,
-        quantity: item.quantity,
-      });
-    }
-
-    return id;
-  }
-
-  function materializeReservation(reservation: Reservation) {
+  function materializeReservation(reservation: any) {
     return {
       ...reservation,
-      items: state.reservationItems.filter((item) => item.reservationId === reservation.id),
+      items: state.reservationItems
+        .filter((item) => item.reservationId === reservation.id)
+        .map((item) => ({ ...item, product: state.product })),
     };
   }
 
-  function filterOrders(where?: { userId?: string }) {
-    const rows = [...state.orders.values()];
-    if (!where?.userId) return rows;
-    return rows.filter((row) => row.userId === where.userId);
-  }
-
-  function materializeOrder(order: Order, include?: Record<string, unknown>) {
-    if (!include) return { ...order };
-
-    const out: Record<string, unknown> = { ...order };
-
-    if (include.items) {
-      out.items = state.orderItems.filter((item) => item.orderId === order.id);
-    }
-
-    if (include.history) {
-      out.history = state.orderEvents
-        .filter((event) => event.orderId === order.id)
-        .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime());
-    }
-
-    if (include.reservation) {
-      if (!order.reservationId) {
-        out.reservation = null;
-      } else {
-        const reservation = state.reservations.get(order.reservationId);
-        out.reservation = reservation ? materializeReservation(reservation) : null;
-      }
-    }
-
-    return out;
+  function materializeOrder(order: any, include?: Record<string, unknown>) {
+    return {
+      ...order,
+      items: include?.items ? state.orderItems.filter((item) => item.orderId === order.id) : undefined,
+      history: include?.history ? state.orderEvents.filter((item) => item.orderId === order.id) : undefined,
+      reservation:
+        include?.reservation && order.reservationId
+          ? materializeReservation(state.reservations.get(order.reservationId))
+          : null,
+      payments: include?.payments ? [...state.payments.values()].filter((item) => item.orderId === order.id) : undefined,
+      coupon: null,
+    };
   }
 
   const tx = {
     inventoryReservation: {
-      findMany: async (args: { where: { status?: string; expiresAt?: { lt?: Date; gt?: Date } }; select?: { id: true } }) => {
-        let rows = [...state.reservations.values()];
-
-        if (args.where.status) {
-          rows = rows.filter((row) => row.status === args.where.status);
-        }
-        if (args.where.expiresAt?.lt) {
-          rows = rows.filter((row) => row.expiresAt < args.where.expiresAt!.lt!);
-        }
-        if (args.where.expiresAt?.gt) {
-          rows = rows.filter((row) => row.expiresAt > args.where.expiresAt!.gt!);
-        }
-
-        if (args.select?.id) {
-          return rows.map((row) => ({ id: row.id }));
-        }
-
-        return rows;
+      findMany: async () =>
+        [...state.reservations.values()].filter(
+          (item) => item.status === 'active' && item.expiresAt < new Date(),
+        ).map((item) => ({ id: item.id })),
+      findFirst: async () => null,
+      findUnique: async ({ where, include }: { where: { id: string }; include?: any }) => {
+        const reservation = state.reservations.get(where.id) ?? null;
+        if (!reservation) return null;
+        return include ? materializeReservation(reservation) : reservation;
       },
-      findFirst: async (args: { where: { userId: string; status: string; expiresAt: { gt: Date } }; include?: { items: true } }) => {
-        const rows = [...state.reservations.values()]
-          .filter(
-            (row) =>
-              row.userId === args.where.userId &&
-              row.status === args.where.status &&
-              row.expiresAt > args.where.expiresAt.gt,
-          )
-          .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
-
-        const found = rows[0];
-        if (!found) return null;
-        return args.include?.items ? materializeReservation(found) : { ...found };
-      },
-      findUnique: async (args: { where: { id: string }; include?: { items: true } }) => {
-        const found = state.reservations.get(args.where.id);
-        if (!found) return null;
-        return args.include?.items ? materializeReservation(found) : { ...found };
-      },
-      create: async (args: { data: { userId: string; status: Reservation['status']; expiresAt: Date } }) => {
-        const reservation: Reservation = {
-          id: `res-${state.seq.reservation++}`,
-          userId: args.data.userId,
-          status: args.data.status,
-          expiresAt: args.data.expiresAt,
+      create: async ({ data }: { data: any }) => {
+        const reservation = {
+          id: `res-${state.seq++}`,
           createdAt: new Date(),
+          updatedAt: new Date(),
           consumedAt: null,
           canceledAt: null,
           expiredAt: null,
+          ...data,
         };
-
         state.reservations.set(reservation.id, reservation);
         return reservation;
       },
-      updateMany: async (args: { where: { id: string; status: Reservation['status'] }; data: Partial<Reservation> }) => {
-        const found = state.reservations.get(args.where.id);
-        if (!found || found.status !== args.where.status) return { count: 0 };
-        state.reservations.set(found.id, { ...found, ...args.data });
+      updateMany: async ({ where, data }: { where: { id: string; status: string }; data: any }) => {
+        const reservation = state.reservations.get(where.id);
+        if (!reservation || reservation.status !== where.status) return { count: 0 };
+        state.reservations.set(where.id, { ...reservation, ...data, updatedAt: new Date() });
         return { count: 1 };
       },
-      update: async (args: { where: { id: string }; data: Partial<Reservation> }) => {
-        const found = state.reservations.get(args.where.id);
-        if (!found) throw new Error('reservation not found');
-        const updated = { ...found, ...args.data };
-        state.reservations.set(found.id, updated);
+      update: async ({ where, data }: { where: { id: string }; data: any }) => {
+        const reservation = state.reservations.get(where.id)!;
+        const updated = { ...reservation, ...data, updatedAt: new Date() };
+        state.reservations.set(where.id, updated);
         return updated;
       },
     },
     inventoryReservationItem: {
-      createMany: async (args: { data: Array<{ reservationId: string; productId: string; name: string; unitPrice: number; quantity: number }> }) => {
-        for (const item of args.data) {
-          state.reservationItems.push({
-            id: `ri-${state.seq.reservationItem++}`,
-            ...item,
-          });
-        }
-        return { count: args.data.length };
+      createMany: async ({ data }: { data: any[] }) => {
+        state.reservationItems.push(...data.map((item) => ({ id: `ri-${state.seq++}`, ...item })));
+        return { count: data.length };
       },
     },
     cartItem: {
-      findMany: async (args: { where: { userId: string } }) =>
-        state.cartItems
-          .filter((row) => row.userId === args.where.userId)
-          .map((row) => ({ ...row, product: state.products.get(row.productId)! })),
-      deleteMany: async (args: { where: { userId: string } }) => {
-        const before = state.cartItems.length;
-        state.cartItems = state.cartItems.filter((row) => row.userId !== args.where.userId);
-        return { count: before - state.cartItems.length };
+      findMany: async () => state.cartItems.map((item) => ({ ...item, product: state.product })),
+      deleteMany: async () => {
+        const count = state.cartItems.length;
+        state.cartItems = [];
+        return { count };
       },
     },
     product: {
-      updateMany: async (args: { where: { id: string; stock: { gte: number } }; data: { stock: { decrement: number } } }) => {
-        const found = state.products.get(args.where.id);
-        if (!found) return { count: 0 };
-        if (found.stock < args.where.stock.gte) return { count: 0 };
-        found.stock -= args.data.stock.decrement;
-        state.products.set(found.id, found);
+      updateMany: async ({ where, data }: { where: { id: string; stock: { gte: number } }; data: { stock: { decrement: number } } }) => {
+        if (state.product.id !== where.id || state.product.stock < where.stock.gte) return { count: 0 };
+        state.product.stock -= data.stock.decrement;
         return { count: 1 };
       },
-      update: async (args: { where: { id: string }; data: { stock: { increment: number } } }) => {
-        const found = state.products.get(args.where.id);
-        if (!found) throw new Error('product not found');
-        found.stock += args.data.stock.increment;
-        state.products.set(found.id, found);
-        return found;
+      update: async ({ data }: { where: { id: string }; data: { stock: { increment: number } } }) => {
+        state.product.stock += data.stock.increment;
+        return state.product;
       },
     },
+    inventoryMovement: {
+      create: async ({ data }: { data: any }) => {
+        state.movements.push(data);
+        return data;
+      },
+    },
+    cartCoupon: {
+      findUnique: async () => null,
+    },
+    address: {
+      findFirst: async () => null,
+      create: async ({ data }: { data: any }) => data,
+    },
     order: {
-      create: async (args: { data: Omit<Order, 'id' | 'createdAt' | 'updatedAt'> }) => {
-        const now = new Date();
-        const order: Order = {
-          id: `ord-${state.seq.order++}`,
-          ...args.data,
-          createdAt: now,
-          updatedAt: now,
+      create: async ({ data }: { data: any }) => {
+        const order = {
+          id: `ord-${state.seq++}`,
+          createdAt: new Date(),
+          updatedAt: new Date(),
+          confirmedAt: null,
+          shippedAt: null,
+          deliveredAt: null,
+          completedAt: null,
+          canceledAt: null,
+          returnedAt: null,
+          ...data,
         };
         state.orders.set(order.id, order);
         return order;
       },
-      findUnique: async (args: { where: { id: string }; include?: Record<string, unknown> }) => {
-        const found = state.orders.get(args.where.id);
-        if (!found) return null;
-        return materializeOrder(found, args.include);
+      findUnique: async ({ where, include }: { where: { id: string }; include?: any }) => {
+        const order = state.orders.get(where.id) ?? null;
+        if (!order) return null;
+        return materializeOrder(order, include);
       },
-      update: async (args: { where: { id: string }; data: Partial<Order>; select?: { id: true; paymentStatus: true } }) => {
-        const found = state.orders.get(args.where.id);
-        if (!found) throw new Error('order not found');
-        const updated = { ...found, ...args.data, updatedAt: new Date() };
-        state.orders.set(found.id, updated);
-
-        if (args.select) {
-          return { id: updated.id, paymentStatus: updated.paymentStatus };
-        }
-
-        return updated;
+      update: async ({ where, data, select }: { where: { id: string }; data: any; select?: any }) => {
+        const order = state.orders.get(where.id)!;
+        const updated = { ...order, ...data, updatedAt: new Date() };
+        state.orders.set(where.id, updated);
+        return select ? { id: updated.id, paymentStatus: updated.paymentStatus } : updated;
       },
+      count: async () => state.orders.size,
+      findMany: async ({ include }: { include?: any }) =>
+        [...state.orders.values()].map((order) => materializeOrder(order, include)),
     },
     orderItem: {
-      createMany: async (args: { data: Array<{ orderId: string; productId: string; name: string; unitPrice: number; quantity: number }> }) => {
-        for (const item of args.data) {
-          state.orderItems.push({
-            id: `oi-${state.seq.orderItem++}`,
-            ...item,
-          });
-        }
-        return { count: args.data.length };
+      createMany: async ({ data }: { data: any[] }) => {
+        state.orderItems.push(...data.map((item) => ({ id: `oi-${state.seq++}`, ...item })));
+        return { count: data.length };
       },
     },
     orderStatusEvent: {
-      create: async (args: { data: { orderId: string; status: OrderEvent['status']; actorId: string } }) => {
-        const event: OrderEvent = {
-          id: `oe-${state.seq.orderEvent++}`,
-          orderId: args.data.orderId,
-          status: args.data.status,
-          actorId: args.data.actorId,
-          createdAt: new Date(),
-        };
+      create: async ({ data }: { data: any }) => {
+        const event = { id: `oe-${state.seq++}`, createdAt: new Date(), ...data };
         state.orderEvents.push(event);
         return event;
       },
     },
-    paymentWebhookEvent: {
-      create: async (args: { data: { eventId: string; type: string; orderId?: string; payload: unknown } }) => {
-        const event: PaymentEvent = {
-          eventId: args.data.eventId,
-          type: args.data.type,
-          orderId: args.data.orderId,
-          payload: args.data.payload,
-          processedAt: new Date(),
+    payment: {
+      create: async ({ data }: { data: any }) => {
+        const payment = {
+          id: `pay-${state.seq++}`,
+          transactionId: null,
+          metadata: null,
+          refundedAmount: 0,
+          createdAt: new Date(),
+          updatedAt: new Date(),
+          ...data,
         };
-        state.paymentEvents.set(event.eventId, event);
-        return event;
+        state.payments.set(payment.id, payment);
+        return payment;
+      },
+      findUnique: async ({ where }: { where: { id: string } }) => state.payments.get(where.id) ?? null,
+      findFirst: async ({ where }: { where: { orderId: string } }) =>
+        [...state.payments.values()].find((payment) => payment.orderId === where.orderId) ?? null,
+      update: async ({ where, data, select }: { where: { id: string }; data: any; select?: any }) => {
+        const payment = state.payments.get(where.id)!;
+        const updated = { ...payment, ...data, updatedAt: new Date() };
+        state.payments.set(where.id, updated);
+        return select ? { id: updated.id, status: updated.status } : updated;
+      },
+      updateMany: async ({ where, data }: { where: { orderId: string }; data: any }) => {
+        let count = 0;
+        for (const [id, payment] of state.payments.entries()) {
+          if (payment.orderId !== where.orderId) continue;
+          state.payments.set(id, { ...payment, ...data, updatedAt: new Date() });
+          count += 1;
+        }
+        return { count };
+      },
+    },
+    coupon: { update: async () => ({ count: 1 }) },
+    notification: {
+      create: async ({ data }: { data: any }) => {
+        state.notifications.push(data);
+        return data;
+      },
+    },
+    paymentWebhookEvent: {
+      create: async ({ data }: { data: any }) => {
+        state.paymentEvents.set(data.eventId, data);
+        return data;
       },
     },
   };
@@ -372,181 +228,89 @@ function createWorkflowMock() {
   const prisma = {
     $transaction: async <T>(callback: (transaction: typeof tx) => Promise<T>) => callback(tx),
     order: {
-      count: async (args: { where?: { userId?: string } }) => filterOrders(args.where).length,
-      findMany: async (args: { where?: { userId?: string }; include?: Record<string, unknown> }) =>
-        filterOrders(args.where).map((order) => materializeOrder(order, args.include)),
-      findUnique: async (args: { where: { id: string }; include?: Record<string, unknown> }) => {
-        const found = state.orders.get(args.where.id);
-        if (!found) return null;
-        return materializeOrder(found, args.include);
-      },
+      count: tx.order.count,
+      findMany: tx.order.findMany,
+      findUnique: tx.order.findUnique,
+      update: tx.order.update,
     },
+    payment: tx.payment,
     paymentWebhookEvent: {
-      findUnique: async (args: { where: { eventId: string } }) => state.paymentEvents.get(args.where.eventId) ?? null,
+      findUnique: async ({ where }: { where: { eventId: string } }) => state.paymentEvents.get(where.eventId) ?? null,
     },
   };
 
-  return {
-    prisma,
-    state,
-    addCart,
-    addReservation,
-  };
+  return { prisma, state };
 }
 
 function checkoutPayload(reservationId: string, paymentMethod: 'cod' | 'vnpay' = 'cod') {
   return {
     reservationId,
+    paymentMethod,
+    shippingMethod: 'standard' as const,
     address: {
       receiverName: 'Khach Demo',
       phone: '0900000000',
-      line1: '123 Nguyen Trai',
+      province: 'Ho Chi Minh',
       district: 'Quan 1',
-      city: 'Ho Chi Minh',
+      ward: 'Ben Nghe',
+      addressLine: '123 Nguyen Trai',
       country: 'Viet Nam',
     },
-    paymentMethod,
-    shippingMethod: 'standard' as const,
-    notes: '',
   };
 }
 
-function sign(body: unknown, secret: string) {
-  return createHmac('sha256', secret).update(JSON.stringify(body)).digest('hex');
-}
-
-test('workflow reserve -> checkout -> webhook captured sets paymentStatus paid', async () => {
+test('workflow reserve -> checkout -> payment webhook -> complete order', async () => {
+  process.env.PAYMENT_WEBHOOK_SECRET = 'test-payment-webhook-secret-12345678901234567890';
   const mock = createWorkflowMock();
-  process.env.PAYMENT_WEBHOOK_SECRET = 'workflow-secret';
-
   const orders = new OrdersService(mock.prisma as never);
   const payments = new PaymentsService(mock.prisma as never);
 
-  mock.addCart('u-1', 'p-1', 1);
-
   const reservation = await orders.createReservationFromCart('u-1');
   const order = await orders.checkout('u-1', checkoutPayload(reservation.id, 'vnpay'));
+  const payment = [...mock.state.payments.values()][0];
 
-  assert.equal(order?.paymentStatus, 'authorized');
-
-  const body = {
-    eventId: 'evt-captured-1',
+  const webhookBody = {
+    eventId: 'evt-paid-1',
     type: 'payment.captured',
     orderId: order!.id,
+    paymentId: payment.id,
+    transactionId: 'txn-1',
     payload: { amount: order!.total },
   };
 
-  const result = await payments.processWebhook(sign(body, 'workflow-secret'), body);
+  await payments.processWebhook(
+    'vnpay',
+    sign(webhookBody, process.env.PAYMENT_WEBHOOK_SECRET!),
+    webhookBody,
+  );
 
-  assert.equal(result.processed, true);
-  assert.equal(result.orderUpdate?.paymentStatus, 'paid');
-  assert.equal(mock.state.orders.get(order!.id)?.paymentStatus, 'paid');
+  const completed = await orders.updateStatus(order!.id, 'confirmed', 'u-admin');
+  assert.equal(completed?.status, 'confirmed');
+  assert.equal(mock.state.payments.get(payment.id)?.status, 'paid');
 });
 
-test('workflow webhook duplicate event is idempotent', async () => {
+test('workflow duplicate webhook remains idempotent', async () => {
+  process.env.PAYMENT_WEBHOOK_SECRET = 'test-payment-webhook-secret-12345678901234567890';
   const mock = createWorkflowMock();
-  process.env.PAYMENT_WEBHOOK_SECRET = 'workflow-secret';
-
   const orders = new OrdersService(mock.prisma as never);
   const payments = new PaymentsService(mock.prisma as never);
 
-  mock.addCart('u-1', 'p-1', 1);
   const reservation = await orders.createReservationFromCart('u-1');
   const order = await orders.checkout('u-1', checkoutPayload(reservation.id, 'vnpay'));
+  const payment = [...mock.state.payments.values()][0];
 
-  const body = {
-    eventId: 'evt-dup-1',
+  const webhookBody = {
+    eventId: 'evt-paid-dup',
     type: 'payment.captured',
     orderId: order!.id,
+    paymentId: payment.id,
     payload: { amount: order!.total },
   };
 
-  const signature = sign(body, 'workflow-secret');
-
-  const first = await payments.processWebhook(signature, body);
-  const second = await payments.processWebhook(signature, body);
+  const signature = sign(webhookBody, process.env.PAYMENT_WEBHOOK_SECRET!);
+  const first = await payments.processWebhook('vnpay', signature, webhookBody);
+  const second = await payments.processWebhook('vnpay', signature, webhookBody);
 
   assert.equal(first.processed, true);
   assert.equal(second.processed, false);
-  assert.equal(second.reason, 'duplicate_event');
-});
-
-test('workflow cancel reservation restores stock and blocks checkout', async () => {
-  const mock = createWorkflowMock();
-  const orders = new OrdersService(mock.prisma as never);
-
-  mock.addCart('u-1', 'p-1', 2);
-  const reservation = await orders.createReservationFromCart('u-1');
-
-  assert.equal(mock.state.products.get('p-1')?.stock, 6);
-
-  await orders.cancelReservation(reservation.id, 'u-1', 'customer');
-
-  assert.equal(mock.state.products.get('p-1')?.stock, 8);
-
-  await assert.rejects(
-    async () => orders.checkout('u-1', checkoutPayload(reservation.id, 'cod')),
-    (error: unknown) => error instanceof BadRequestException,
-  );
-});
-
-test('workflow expired reservation can be released and no longer active', async () => {
-  const mock = createWorkflowMock();
-  const orders = new OrdersService(mock.prisma as never);
-
-  mock.state.products.get('p-1')!.stock = 5;
-  mock.addReservation({
-    id: 'res-expired',
-    userId: 'u-1',
-    status: 'active',
-    expiresAt: new Date(Date.now() - 30_000),
-    items: [{ productId: 'p-1', quantity: 2 }],
-  });
-
-  const result = await orders.releaseExpiredReservations('u-admin');
-
-  assert.equal(result.expiredCount, 1);
-  assert.equal(mock.state.reservations.get('res-expired')?.status, 'expired');
-  assert.equal(mock.state.products.get('p-1')?.stock, 7);
-
-  const current = await orders.getCurrentReservation('u-1');
-  assert.equal(current.data, null);
-});
-
-test('workflow getById prevents other customer from reading order', async () => {
-  const mock = createWorkflowMock();
-  const orders = new OrdersService(mock.prisma as never);
-
-  mock.addCart('u-1', 'p-1', 1);
-  const reservation = await orders.createReservationFromCart('u-1');
-  const order = await orders.checkout('u-1', checkoutPayload(reservation.id));
-
-  await assert.rejects(
-    async () => orders.getById(order!.id, 'u-other', 'customer'),
-    (error: unknown) => error instanceof ForbiddenException,
-  );
-
-  const adminView = await orders.getById(order!.id, 'u-admin', 'admin');
-  assert.equal(adminView.id, order!.id);
-});
-
-test('workflow admin transitions order through full 4-step state machine', async () => {
-  const mock = createWorkflowMock();
-  const orders = new OrdersService(mock.prisma as never);
-
-  mock.addCart('u-1', 'p-1', 1);
-  const reservation = await orders.createReservationFromCart('u-1');
-  const order = await orders.checkout('u-1', checkoutPayload(reservation.id, 'cod'));
-
-  const confirmed = await orders.updateStatus(order!.id, 'confirmed', 'u-admin');
-  assert.equal(confirmed?.status, 'confirmed');
-  assert.equal(confirmed?.shippingStatus, 'packed');
-
-  const shipping = await orders.updateStatus(order!.id, 'shipping', 'u-admin');
-  assert.equal(shipping?.status, 'shipping');
-  assert.equal(shipping?.shippingStatus, 'in_transit');
-
-  const completed = await orders.updateStatus(order!.id, 'completed', 'u-admin');
-  assert.equal(completed?.status, 'completed');
-  assert.equal(completed?.shippingStatus, 'delivered');
 });

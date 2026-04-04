@@ -13,6 +13,14 @@ export class PaymentWebhookDto {
   @IsString()
   orderId?: string;
 
+  @IsOptional()
+  @IsString()
+  paymentId?: string;
+
+  @IsOptional()
+  @IsString()
+  transactionId?: string;
+
   @IsObject()
   payload!: Record<string, unknown>;
 }

@@ -1,11 +1,17 @@
-import { createHash, randomBytes } from 'node:crypto';
+import { createHmac, randomBytes } from 'node:crypto';
+import { hash, compare } from 'bcryptjs';
 
-export function hashPassword(password: string): string {
-  return createHash('sha256').update(password).digest('hex');
+const PASSWORD_ROUNDS = 12;
+
+export async function hashPassword(password: string): Promise<string> {
+  return hash(password, PASSWORD_ROUNDS);
 }
 
-export function comparePassword(rawPassword: string, passwordHash: string): boolean {
-  return hashPassword(rawPassword) === passwordHash;
+export async function comparePassword(
+  rawPassword: string,
+  passwordHash: string,
+): Promise<boolean> {
+  return compare(rawPassword, passwordHash);
 }
 
 export function generateId(prefix: string): string {
@@ -14,4 +20,8 @@ export function generateId(prefix: string): string {
 
 export function generateToken(size = 32): string {
   return randomBytes(size).toString('hex');
+}
+
+export function hashOpaqueToken(token: string, secret: string): string {
+  return createHmac('sha256', secret).update(token).digest('hex');
 }

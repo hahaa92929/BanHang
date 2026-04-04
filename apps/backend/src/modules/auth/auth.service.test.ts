@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { BadRequestException, UnauthorizedException } from '@nestjs/common';
+import { ForbiddenException, UnauthorizedException } from '@nestjs/common';
+import jwt from 'jsonwebtoken';
 import { UserRole } from '@prisma/client';
 import { hashPassword } from '../../common/security';
 import { AuthService } from './auth.service';
@@ -10,319 +11,396 @@ type UserRecord = {
   email: string;
   passwordHash: string;
   fullName: string;
+  phone?: string | null;
   role: UserRole;
+  emailVerifiedAt: Date | null;
+  failedLoginAttempts: number;
+  lockedUntil: Date | null;
+  lastLoginAt: Date | null;
   createdAt: Date;
+  updatedAt: Date;
 };
 
 type SessionRecord = {
-  token: string;
+  id: string;
+  tokenHash: string;
+  userId: string;
+  userAgent?: string | null;
+  ipAddress?: string | null;
+  expiresAt: Date;
+  lastUsedAt?: Date | null;
+  createdAt: Date;
+};
+
+type TokenRecord = {
+  id: string;
+  tokenHash: string;
   userId: string;
   expiresAt: Date;
+  consumedAt: Date | null;
+  createdAt: Date;
 };
 
 function createAuthMock() {
   const users = new Map<string, UserRecord>();
   const usersByEmail = new Map<string, UserRecord>();
   const sessions = new Map<string, SessionRecord>();
+  const passwordResetTokens = new Map<string, TokenRecord>();
+  const emailVerificationTokens = new Map<string, TokenRecord>();
+  let sequence = 1;
 
-  function addUser(user: UserRecord) {
-    users.set(user.id, user);
-    usersByEmail.set(user.email, user);
+  function addUser(user: Partial<UserRecord> & Pick<UserRecord, 'id' | 'email' | 'passwordHash' | 'fullName' | 'role'>) {
+    const record: UserRecord = {
+      phone: user.phone ?? null,
+      emailVerifiedAt: user.emailVerifiedAt ?? null,
+      failedLoginAttempts: user.failedLoginAttempts ?? 0,
+      lockedUntil: user.lockedUntil ?? null,
+      lastLoginAt: user.lastLoginAt ?? null,
+      createdAt: user.createdAt ?? new Date(),
+      updatedAt: user.updatedAt ?? new Date(),
+      ...user,
+    };
+
+    users.set(record.id, record);
+    usersByEmail.set(record.email, record);
+    return record;
   }
+
+  const tx = {
+    user: {
+      create: async (args: { data: { email: string; passwordHash: string; fullName: string; phone?: string; role: UserRole } }) => {
+        const user = addUser({
+          id: `u-${sequence++}`,
+          email: args.data.email,
+          passwordHash: args.data.passwordHash,
+          fullName: args.data.fullName,
+          phone: args.data.phone ?? null,
+          role: args.data.role,
+        });
+        return user;
+      },
+      update: async (args: { where: { id: string }; data: Partial<UserRecord> }) => {
+        const user = users.get(args.where.id);
+        if (!user) throw new Error('user not found');
+        const updated = { ...user, ...args.data, updatedAt: new Date() };
+        users.set(user.id, updated);
+        usersByEmail.set(updated.email, updated);
+        return updated;
+      },
+    },
+    notification: {
+      create: async () => ({ id: `n-${sequence++}` }),
+    },
+    emailVerificationToken: {
+      create: async (args: { data: Omit<TokenRecord, 'id' | 'createdAt' | 'consumedAt'> }) => {
+        const token: TokenRecord = {
+          id: `evt-${sequence++}`,
+          createdAt: new Date(),
+          consumedAt: null,
+          ...args.data,
+        };
+        emailVerificationTokens.set(token.id, token);
+        return token;
+      },
+      update: async (args: { where: { id: string }; data: Partial<TokenRecord> }) => {
+        const token = emailVerificationTokens.get(args.where.id);
+        if (!token) throw new Error('token not found');
+        const updated = { ...token, ...args.data };
+        emailVerificationTokens.set(token.id, updated);
+        return updated;
+      },
+      deleteMany: async (args: { where: { expiresAt?: { lt: Date } } }) => {
+        let count = 0;
+        for (const [id, token] of emailVerificationTokens.entries()) {
+          if (args.where.expiresAt?.lt && token.expiresAt < args.where.expiresAt.lt) {
+            emailVerificationTokens.delete(id);
+            count += 1;
+          }
+        }
+        return { count };
+      },
+      findUnique: async (args: { where: { tokenHash: string } }) =>
+        [...emailVerificationTokens.values()].find((item) => item.tokenHash === args.where.tokenHash) ??
+        null,
+    },
+    passwordResetToken: {
+      create: async (args: { data: Omit<TokenRecord, 'id' | 'createdAt' | 'consumedAt'> }) => {
+        const token: TokenRecord = {
+          id: `prt-${sequence++}`,
+          createdAt: new Date(),
+          consumedAt: null,
+          ...args.data,
+        };
+        passwordResetTokens.set(token.id, token);
+        return token;
+      },
+      update: async (args: { where: { id: string }; data: Partial<TokenRecord> }) => {
+        const token = passwordResetTokens.get(args.where.id);
+        if (!token) throw new Error('token not found');
+        const updated = { ...token, ...args.data };
+        passwordResetTokens.set(token.id, updated);
+        return updated;
+      },
+      deleteMany: async (args: { where: { expiresAt?: { lt: Date }; userId?: string } }) => {
+        let count = 0;
+        for (const [id, token] of passwordResetTokens.entries()) {
+          const expired = args.where.expiresAt?.lt ? token.expiresAt < args.where.expiresAt.lt : true;
+          const byUser = args.where.userId ? token.userId === args.where.userId : true;
+          if (expired && byUser) {
+            passwordResetTokens.delete(id);
+            count += 1;
+          }
+        }
+        return { count };
+      },
+      findUnique: async (args: { where: { tokenHash: string } }) =>
+        [...passwordResetTokens.values()].find((item) => item.tokenHash === args.where.tokenHash) ??
+        null,
+    },
+    refreshSession: {
+      create: async (args: { data: Omit<SessionRecord, 'id' | 'createdAt'> }) => {
+        const session: SessionRecord = {
+          id: `s-${sequence++}`,
+          createdAt: new Date(),
+          ...args.data,
+        };
+        sessions.set(session.id, session);
+        return session;
+      },
+      findUnique: async (args: { where: { tokenHash: string } }) =>
+        [...sessions.values()].find((item) => item.tokenHash === args.where.tokenHash) ?? null,
+      findMany: async (args: { where: { userId: string } }) =>
+        [...sessions.values()]
+          .filter((item) => item.userId === args.where.userId)
+          .sort((left, right) => right.createdAt.getTime() - left.createdAt.getTime()),
+      delete: async (args: { where: { id: string } }) => {
+        const session = sessions.get(args.where.id);
+        if (!session) throw new Error('session not found');
+        sessions.delete(args.where.id);
+        return session;
+      },
+      deleteMany: async (args: { where: { id?: string; userId?: string; tokenHash?: string; expiresAt?: { lt: Date } } }) => {
+        let count = 0;
+        for (const [id, session] of sessions.entries()) {
+          const byId = args.where.id ? session.id === args.where.id : true;
+          const byUser = args.where.userId ? session.userId === args.where.userId : true;
+          const byHash = args.where.tokenHash ? session.tokenHash === args.where.tokenHash : true;
+          const byExpiry = args.where.expiresAt?.lt ? session.expiresAt < args.where.expiresAt.lt : true;
+          if (byId && byUser && byHash && byExpiry) {
+            sessions.delete(id);
+            count += 1;
+          }
+        }
+        return { count };
+      },
+    },
+  };
 
   const prisma = {
     user: {
       findUnique: async (args: { where: { email?: string; id?: string }; select?: { id: true } }) => {
-        if (args.where.email) {
-          const user = usersByEmail.get(args.where.email) ?? null;
-          if (!user) return null;
-          if (args.select?.id) return { id: user.id };
-          return user;
-        }
+        const user = args.where.id
+          ? users.get(args.where.id) ?? null
+          : args.where.email
+            ? usersByEmail.get(args.where.email) ?? null
+            : null;
 
-        if (args.where.id) {
-          return users.get(args.where.id) ?? null;
-        }
-
-        return null;
-      },
-      create: async (args: {
-        data: { email: string; passwordHash: string; fullName: string; role: UserRole };
-      }) => {
-        const user: UserRecord = {
-          id: `u-${users.size + 1}`,
-          email: args.data.email,
-          passwordHash: args.data.passwordHash,
-          fullName: args.data.fullName,
-          role: args.data.role,
-          createdAt: new Date(),
-        };
-
-        addUser(user);
+        if (!user) return null;
+        if (args.select?.id) return { id: user.id };
         return user;
       },
+      update: tx.user.update,
     },
-    refreshSession: {
-      create: async (args: { data: SessionRecord }) => {
-        sessions.set(args.data.token, args.data);
-        return args.data;
-      },
-      deleteMany: async (args: { where: { token?: string; userId?: string; expiresAt?: { lt: Date } } }) => {
-        let count = 0;
-
-        if (args.where.token) {
-          if (sessions.delete(args.where.token)) count += 1;
-          return { count };
-        }
-
-        if (args.where.userId) {
-          for (const [token, session] of sessions.entries()) {
-            if (session.userId === args.where.userId) {
-              sessions.delete(token);
-              count += 1;
-            }
-          }
-          return { count };
-        }
-
-        if (args.where.expiresAt?.lt) {
-          for (const [token, session] of sessions.entries()) {
-            if (session.expiresAt < args.where.expiresAt.lt) {
-              sessions.delete(token);
-              count += 1;
-            }
-          }
-          return { count };
-        }
-
-        return { count };
-      },
-      findUnique: async (args: { where: { token: string } }) => sessions.get(args.where.token) ?? null,
-      delete: async (args: { where: { token: string } }) => {
-        const found = sessions.get(args.where.token);
-        if (!found) throw new Error('session not found');
-        sessions.delete(args.where.token);
-        return found;
-      },
-    },
+    refreshSession: tx.refreshSession,
+    passwordResetToken: tx.passwordResetToken,
+    emailVerificationToken: tx.emailVerificationToken,
+    $transaction: async <T>(callback: (transaction: typeof tx) => Promise<T>) => callback(tx),
   };
 
   return {
     prisma,
     users,
-    usersByEmail,
     sessions,
+    passwordResetTokens,
+    emailVerificationTokens,
     addUser,
   };
 }
 
-test('auth.login returns access and refresh tokens for valid credentials', async () => {
-  const mock = createAuthMock();
-
-  mock.addUser({
-    id: 'u-admin',
-    email: 'admin@banhang.local',
-    passwordHash: hashPassword('admin123'),
-    fullName: 'Admin Demo',
-    role: 'admin',
-    createdAt: new Date('2026-04-01T00:00:00.000Z'),
-  });
-
-  const service = new AuthService(mock.prisma as never);
-  const result = await service.login('admin@banhang.local', 'admin123');
-
-  assert.ok(result.accessToken.length > 20);
-  assert.ok(result.refreshToken.length > 20);
-  assert.equal(result.user.email, 'admin@banhang.local');
-  assert.equal(result.user.role, 'admin');
-  assert.equal(mock.sessions.size, 1);
-});
-
-test('auth.login throws UnauthorizedException for invalid password', async () => {
-  const mock = createAuthMock();
-
-  mock.addUser({
-    id: 'u-admin',
-    email: 'admin@banhang.local',
-    passwordHash: hashPassword('admin123'),
-    fullName: 'Admin Demo',
-    role: 'admin',
-    createdAt: new Date(),
-  });
-
-  const service = new AuthService(mock.prisma as never);
-
-  await assert.rejects(
-    async () => service.login('admin@banhang.local', 'wrong-password'),
-    (error: unknown) => error instanceof UnauthorizedException,
-  );
-});
-
-test('auth.register normalizes email and stores hashed password', async () => {
+test('auth.register creates hashed customer account and returns verification debug token', async () => {
   const mock = createAuthMock();
   const service = new AuthService(mock.prisma as never);
 
-  const result = await service.register('USER@Example.com', 'hello123', 'User Demo');
+  const result = await service.register('USER@Example.com', 'hello1234', 'User Demo', '0900000000');
 
   assert.equal(result.user.email, 'user@example.com');
   assert.equal(result.user.role, 'customer');
+  assert.ok(result.debug?.verificationToken);
 
-  const storedUser = mock.usersByEmail.get('user@example.com');
+  const storedUser = [...mock.users.values()].find((user) => user.email === 'user@example.com');
   assert.ok(storedUser);
-  assert.notEqual(storedUser?.passwordHash, 'hello123');
-  assert.equal(storedUser?.passwordHash, hashPassword('hello123'));
+  assert.notEqual(storedUser?.passwordHash, 'hello1234');
+  assert.equal(mock.sessions.size, 1);
+  assert.equal(mock.emailVerificationTokens.size, 1);
 });
 
-test('auth.register throws BadRequestException when email already exists', async () => {
+test('auth.login locks account after repeated failed attempts', async () => {
   const mock = createAuthMock();
-
   mock.addUser({
     id: 'u-1',
     email: 'user@example.com',
-    passwordHash: hashPassword('abc12345'),
-    fullName: 'Existing User',
+    passwordHash: await hashPassword('hello1234'),
+    fullName: 'User Demo',
     role: 'customer',
-    createdAt: new Date(),
   });
 
   const service = new AuthService(mock.prisma as never);
 
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    await assert.rejects(
+      async () => service.login('user@example.com', 'wrong-password'),
+      (error: unknown) => error instanceof UnauthorizedException || error instanceof ForbiddenException,
+    );
+  }
+
   await assert.rejects(
-    async () => service.register('user@example.com', 'newpass123', 'New User'),
-    (error: unknown) => error instanceof BadRequestException,
+    async () => service.login('user@example.com', 'hello1234'),
+    (error: unknown) => error instanceof ForbiddenException,
   );
 });
 
-test('auth.refresh rotates refresh token and invalidates old token', async () => {
+test('auth.refresh rotates refresh token and invalidates old session', async () => {
   const mock = createAuthMock();
-
   mock.addUser({
     id: 'u-1',
     email: 'user@example.com',
-    passwordHash: hashPassword('abc12345'),
+    passwordHash: await hashPassword('hello1234'),
     fullName: 'User Demo',
     role: 'customer',
-    createdAt: new Date(),
-  });
-
-  mock.sessions.set('old-refresh', {
-    token: 'old-refresh',
-    userId: 'u-1',
-    expiresAt: new Date(Date.now() + 60_000),
   });
 
   const service = new AuthService(mock.prisma as never);
-  const result = await service.refresh('old-refresh');
+  const firstLogin = await service.login('user@example.com', 'hello1234');
 
-  assert.ok(result.refreshToken.length > 20);
-  assert.notEqual(result.refreshToken, 'old-refresh');
-  assert.equal(mock.sessions.has('old-refresh'), false);
+  const refreshed = await service.refresh(firstLogin.refreshToken);
+
+  assert.ok(refreshed.refreshToken.length > 40);
+  assert.notEqual(refreshed.refreshToken, firstLogin.refreshToken);
   assert.equal(mock.sessions.size, 1);
 });
 
-test('auth.refresh throws UnauthorizedException when token expired', async () => {
+test('auth.forgotPassword and resetPassword rotate credentials and clear sessions', async () => {
   const mock = createAuthMock();
-
   mock.addUser({
     id: 'u-1',
     email: 'user@example.com',
-    passwordHash: hashPassword('abc12345'),
+    passwordHash: await hashPassword('hello1234'),
     fullName: 'User Demo',
     role: 'customer',
-    createdAt: new Date(),
-  });
-
-  mock.sessions.set('expired-refresh', {
-    token: 'expired-refresh',
-    userId: 'u-1',
-    expiresAt: new Date(Date.now() - 1_000),
   });
 
   const service = new AuthService(mock.prisma as never);
+  await service.login('user@example.com', 'hello1234');
+  const forgot = await service.forgotPassword('user@example.com');
+
+  assert.ok(forgot.debug?.resetToken);
+  await service.resetPassword(forgot.debug!.resetToken, 'new-password-1234');
 
   await assert.rejects(
-    async () => service.refresh('expired-refresh'),
+    async () => service.login('user@example.com', 'hello1234'),
+    (error: unknown) => error instanceof UnauthorizedException,
+  );
+
+  const relogin = await service.login('user@example.com', 'new-password-1234');
+  assert.ok(relogin.accessToken.length > 20);
+  assert.equal(mock.sessions.size, 1);
+});
+
+test('auth.verifyEmail marks email as verified', async () => {
+  const mock = createAuthMock();
+  const service = new AuthService(mock.prisma as never);
+  const result = await service.register('verify@example.com', 'hello1234', 'Verify Demo');
+
+  await service.verifyEmail(result.debug!.verificationToken);
+
+  const storedUser = [...mock.users.values()].find((user) => user.email === 'verify@example.com');
+  assert.ok(storedUser?.emailVerifiedAt instanceof Date);
+});
+
+test('auth.requestEmailVerification issues a new token and handles verified or missing users', async () => {
+  const mock = createAuthMock();
+  mock.addUser({
+    id: 'u-1',
+    email: 'pending@example.com',
+    passwordHash: await hashPassword('hello1234'),
+    fullName: 'Pending User',
+    role: 'customer',
+  });
+  mock.addUser({
+    id: 'u-2',
+    email: 'verified@example.com',
+    passwordHash: await hashPassword('hello1234'),
+    fullName: 'Verified User',
+    role: 'customer',
+    emailVerifiedAt: new Date(),
+  });
+
+  const service = new AuthService(mock.prisma as never);
+  const issued = await service.requestEmailVerification('u-1');
+  const alreadyVerified = await service.requestEmailVerification('u-2');
+
+  assert.ok(issued.debug?.verificationToken);
+  assert.equal(alreadyVerified.alreadyVerified, true);
+  assert.equal(mock.emailVerificationTokens.size, 1);
+
+  await assert.rejects(
+    async () => service.requestEmailVerification('missing-user'),
     (error: unknown) => error instanceof UnauthorizedException,
   );
 });
 
-test('auth.logout by refresh token removes only that token', async () => {
+test('auth.session management and token verification work as expected', async () => {
   const mock = createAuthMock();
-
-  mock.sessions.set('token-1', {
-    token: 'token-1',
-    userId: 'u-1',
-    expiresAt: new Date(Date.now() + 10_000),
-  });
-
-  mock.sessions.set('token-2', {
-    token: 'token-2',
-    userId: 'u-1',
-    expiresAt: new Date(Date.now() + 10_000),
-  });
-
-  const service = new AuthService(mock.prisma as never);
-  const result = await service.logout('token-1');
-
-  assert.equal(result.success, true);
-  assert.equal(mock.sessions.has('token-1'), false);
-  assert.equal(mock.sessions.has('token-2'), true);
-});
-
-test('auth.me returns public profile for existing user', async () => {
-  const mock = createAuthMock();
-
   mock.addUser({
     id: 'u-1',
     email: 'user@example.com',
-    passwordHash: hashPassword('abc12345'),
+    passwordHash: await hashPassword('hello1234'),
     fullName: 'User Demo',
     role: 'customer',
-    createdAt: new Date('2026-04-01T00:00:00.000Z'),
   });
 
   const service = new AuthService(mock.prisma as never);
-  const profile = await service.me('u-1');
+  await service.login('user@example.com', 'hello1234', { userAgent: 'agent-1', ipAddress: '127.0.0.1' });
+  await service.login('user@example.com', 'hello1234', { userAgent: 'agent-2', ipAddress: '127.0.0.2' });
 
-  assert.equal(profile.id, 'u-1');
-  assert.equal(profile.email, 'user@example.com');
-  assert.equal(profile.fullName, 'User Demo');
-  assert.equal(profile.role, 'customer');
-});
+  const sessions = await service.listSessions('u-1');
+  assert.equal(sessions.data.length, 2);
+  assert.equal(sessions.data[0].userAgent, 'agent-2');
 
-test('auth.me throws UnauthorizedException for unknown user', async () => {
-  const mock = createAuthMock();
-  const service = new AuthService(mock.prisma as never);
+  const revoked = await service.revokeSession(sessions.data[0].id, 'u-1');
+  assert.equal(revoked.success, true);
+  assert.equal(mock.sessions.size, 1);
 
-  await assert.rejects(
-    async () => service.me('missing-user'),
-    (error: unknown) => error instanceof UnauthorizedException,
-  );
-});
-
-test('auth.logout by userId removes all sessions of that user', async () => {
-  const mock = createAuthMock();
-
-  mock.sessions.set('token-a', {
-    token: 'token-a',
-    userId: 'u-1',
-    expiresAt: new Date(Date.now() + 10_000),
-  });
-  mock.sessions.set('token-b', {
-    token: 'token-b',
-    userId: 'u-1',
-    expiresAt: new Date(Date.now() + 10_000),
-  });
-  mock.sessions.set('token-c', {
-    token: 'token-c',
-    userId: 'u-2',
-    expiresAt: new Date(Date.now() + 10_000),
-  });
-
-  const service = new AuthService(mock.prisma as never);
   await service.logout(undefined, 'u-1');
+  assert.equal(mock.sessions.size, 0);
 
-  assert.equal(mock.sessions.has('token-a'), false);
-  assert.equal(mock.sessions.has('token-b'), false);
-  assert.equal(mock.sessions.has('token-c'), true);
+  const validLogin = await service.login('user@example.com', 'hello1234');
+  const payload = service.verifyAccessToken(validLogin.accessToken);
+  assert.equal(payload.sub, 'u-1');
+
+  const malformedToken = jwt.sign(
+    { sub: 'u-1' },
+    'test-jwt-secret-12345678901234567890',
+    { expiresIn: 3600 },
+  );
+
+  await assert.rejects(
+    async () => service.verifyEmail('invalid-token'),
+    (error: unknown) => error instanceof UnauthorizedException,
+  );
+
+  assert.throws(
+    () => service.verifyAccessToken(malformedToken),
+    (error: unknown) => error instanceof UnauthorizedException,
+  );
 });

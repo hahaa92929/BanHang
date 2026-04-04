@@ -2,12 +2,24 @@
 
 import { FormEvent, useEffect, useMemo, useState } from 'react';
 
-type UserRole = 'admin' | 'customer';
-type ProductSort = 'price_asc' | 'price_desc' | 'rating_desc' | 'newest';
-type PaymentMethod = 'cod' | 'vnpay' | 'momo';
-type ShippingMethod = 'standard' | 'express';
-type OrderStatus = 'created' | 'confirmed' | 'shipping' | 'completed';
+type UserRole = 'super_admin' | 'admin' | 'manager' | 'staff' | 'customer' | 'guest';
+type ProductSort = 'price_asc' | 'price_desc' | 'rating_desc' | 'newest' | 'featured';
+type PaymentMethod = 'cod' | 'vnpay' | 'momo' | 'zalopay' | 'stripe' | 'paypal' | 'bank_transfer';
+type ShippingMethod = 'standard' | 'express' | 'same_day' | 'pickup';
+type OrderStatus = 'created' | 'confirmed' | 'shipping' | 'completed' | 'canceled' | 'returned';
 type ReservationStatus = 'active' | 'consumed' | 'canceled' | 'expired';
+
+type CategoryNode = {
+  id: string;
+  name: string;
+  slug: string;
+  children?: CategoryNode[];
+};
+
+type CategoryOption = {
+  value: string;
+  label: string;
+};
 
 type User = {
   id: string;
@@ -27,16 +39,16 @@ type Product = {
   id: string;
   sku: string;
   name: string;
-  category: string;
   description: string;
   price: number;
   stock: number;
   rating: number;
+  category?: { name: string; slug: string } | null;
 };
 
 type ProductListResponse = {
   data: Product[];
-  categories: string[];
+  categories: CategoryNode[];
   total: number;
   page: number;
   limit: number;
@@ -47,6 +59,9 @@ type Cart = {
   items: Array<{ productId: string; name: string; unitPrice: number; quantity: number }>;
   subtotal: number;
   totalItems: number;
+  discountAmount: number;
+  total: number;
+  coupon?: { code: string } | null;
 };
 
 type ReservationSummary = {
@@ -60,6 +75,7 @@ type ReservationSummary = {
 
 type Order = {
   id: string;
+  orderNumber?: string;
   status: OrderStatus;
   paymentMethod: PaymentMethod;
   paymentStatus: string;
@@ -90,16 +106,16 @@ type FilterState = {
 type CheckoutState = {
   receiverName: string;
   phone: string;
-  line1: string;
+  addressLine: string;
   district: string;
-  city: string;
+  province: string;
   country: string;
   paymentMethod: PaymentMethod;
   shippingMethod: ShippingMethod;
   notes: string;
 };
 
-const API = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:4000';
+const API = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:4000/api/v1';
 const AUTH_STORAGE_KEY = 'banhang.auth';
 
 const INITIAL_FILTERS: FilterState = {
@@ -116,9 +132,9 @@ const INITIAL_FILTERS: FilterState = {
 const INITIAL_CHECKOUT: CheckoutState = {
   receiverName: 'Khach Demo',
   phone: '0900000000',
-  line1: '123 Nguyen Trai',
+  addressLine: '123 Nguyen Trai',
   district: 'Quan 1',
-  city: 'Ho Chi Minh',
+  province: 'Ho Chi Minh',
   country: 'Viet Nam',
   paymentMethod: 'cod',
   shippingMethod: 'standard',
@@ -140,19 +156,33 @@ function nextOrderStatus(status: OrderStatus): 'confirmed' | 'shipping' | 'compl
   return null;
 }
 
+function flattenCategories(nodes: CategoryNode[], prefix = ''): CategoryOption[] {
+  return nodes.flatMap((node) => {
+    const label = prefix ? `${prefix} / ${node.name}` : node.name;
+    return [{ value: node.slug, label }, ...flattenCategories(node.children ?? [], label)];
+  });
+}
+
 export default function HomePage() {
   const [auth, setAuth] = useState<AuthPayload | null>(null);
   const [mode, setMode] = useState<'login' | 'register'>('login');
   const [email, setEmail] = useState('admin@banhang.local');
-  const [password, setPassword] = useState('admin123');
+  const [password, setPassword] = useState('admin12345');
   const [fullName, setFullName] = useState('');
 
   const [filters, setFilters] = useState<FilterState>(INITIAL_FILTERS);
   const [products, setProducts] = useState<Product[]>([]);
-  const [categories, setCategories] = useState<string[]>([]);
+  const [categories, setCategories] = useState<CategoryOption[]>([]);
   const [productsMeta, setProductsMeta] = useState({ total: 0, page: 1, totalPages: 1, limit: 6 });
 
-  const [cart, setCart] = useState<Cart>({ items: [], subtotal: 0, totalItems: 0 });
+  const [cart, setCart] = useState<Cart>({
+    items: [],
+    subtotal: 0,
+    totalItems: 0,
+    discountAmount: 0,
+    total: 0,
+    coupon: null,
+  });
   const [reservation, setReservation] = useState<ReservationSummary | null>(null);
   const [checkoutStep, setCheckoutStep] = useState<1 | 2 | 3>(1);
   const [checkout, setCheckout] = useState<CheckoutState>(INITIAL_CHECKOUT);
@@ -211,10 +241,10 @@ export default function HomePage() {
       params.set('page', String(active.page));
       params.set('limit', String(active.limit));
 
-      const result = await requestJson<ProductListResponse>(`/api/products?${params.toString()}`);
+      const result = await requestJson<ProductListResponse>(`/products?${params.toString()}`);
 
       setProducts(result.data);
-      setCategories(result.categories);
+      setCategories(flattenCategories(result.categories));
       setProductsMeta({
         total: result.total,
         page: result.page,
@@ -230,14 +260,14 @@ export default function HomePage() {
 
   async function loadCart() {
     if (!isAuthenticated) {
-      setCart({ items: [], subtotal: 0, totalItems: 0 });
+      setCart({ items: [], subtotal: 0, totalItems: 0, discountAmount: 0, total: 0, coupon: null });
       return;
     }
 
     setLoading((prev) => ({ ...prev, cart: true }));
 
     try {
-      const result = await requestJson<Cart>('/api/cart', { headers: authHeaders });
+      const result = await requestJson<Cart>('/cart', { headers: authHeaders });
       setCart(result);
     } catch (error) {
       notify('error', error instanceof Error ? error.message : 'Failed to load cart');
@@ -255,7 +285,7 @@ export default function HomePage() {
     setLoading((prev) => ({ ...prev, orders: true }));
 
     try {
-      const result = await requestJson<OrdersResponse>('/api/orders', { headers: authHeaders });
+      const result = await requestJson<OrdersResponse>('/orders', { headers: authHeaders });
       setOrders(result.data);
     } catch (error) {
       notify('error', error instanceof Error ? error.message : 'Failed to load orders');
@@ -273,7 +303,7 @@ export default function HomePage() {
     setLoading((prev) => ({ ...prev, reservation: true }));
 
     try {
-      const result = await requestJson<{ data: ReservationSummary | null }>('/api/orders/reservations/current', {
+      const result = await requestJson<{ data: ReservationSummary | null }>('/orders/reservations/current', {
         headers: authHeaders,
       });
       setReservation(result.data);
@@ -293,7 +323,7 @@ export default function HomePage() {
     setLoading((prev) => ({ ...prev, reservation: true }));
 
     try {
-      const result = await requestJson<ReservationSummary>('/api/orders/reservations', {
+      const result = await requestJson<ReservationSummary>('/orders/reservations', {
         method: 'POST',
         headers: authHeaders,
       });
@@ -315,7 +345,7 @@ export default function HomePage() {
     }
 
     try {
-      await requestJson<{ success: boolean }>(`/api/orders/reservations/${reservation.id}/cancel`, {
+      await requestJson<{ success: boolean }>(`/orders/reservations/${reservation.id}/cancel`, {
         method: 'POST',
         headers: authHeaders,
       });
@@ -336,7 +366,7 @@ export default function HomePage() {
     event.preventDefault();
 
     try {
-      const endpoint = mode === 'login' ? '/api/auth/login' : '/api/auth/register';
+      const endpoint = mode === 'login' ? '/auth/login' : '/auth/register';
       const payload =
         mode === 'login'
           ? { email, password }
@@ -359,7 +389,7 @@ export default function HomePage() {
     if (!auth?.refreshToken) return;
 
     try {
-      const result = await requestJson<AuthPayload>('/api/auth/refresh', {
+      const result = await requestJson<AuthPayload>('/auth/refresh', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ refreshToken: auth.refreshToken }),
@@ -379,7 +409,7 @@ export default function HomePage() {
 
     if (auth) {
       try {
-        await requestJson<{ success: boolean }>('/api/auth/logout', {
+        await requestJson<{ success: boolean }>('/auth/logout', {
           method: 'POST',
           headers: authHeaders,
           body: JSON.stringify({ refreshToken: auth.refreshToken }),
@@ -391,7 +421,7 @@ export default function HomePage() {
 
     setAuth(null);
     setOrders([]);
-    setCart({ items: [], subtotal: 0, totalItems: 0 });
+    setCart({ items: [], subtotal: 0, totalItems: 0, discountAmount: 0, total: 0, coupon: null });
     setReservation(null);
     notify('ok', 'Logged out');
   }
@@ -405,7 +435,7 @@ export default function HomePage() {
     try {
       await invalidateReservationForCartChange();
 
-      const result = await requestJson<Cart>('/api/cart/items', {
+      const result = await requestJson<Cart>('/cart/items', {
         method: 'POST',
         headers: authHeaders,
         body: JSON.stringify({ productId, quantity: 1 }),
@@ -429,7 +459,7 @@ export default function HomePage() {
     try {
       await invalidateReservationForCartChange();
 
-      const result = await requestJson<Cart>(`/api/cart/items/${productId}`, {
+      const result = await requestJson<Cart>(`/cart/items/${productId}`, {
         method: 'PATCH',
         headers: authHeaders,
         body: JSON.stringify({ quantity }),
@@ -447,7 +477,7 @@ export default function HomePage() {
     try {
       await invalidateReservationForCartChange();
 
-      const result = await requestJson<Cart>(`/api/cart/items/${productId}`, {
+      const result = await requestJson<Cart>(`/cart/items/${productId}`, {
         method: 'DELETE',
         headers: authHeaders,
       });
@@ -464,7 +494,7 @@ export default function HomePage() {
     try {
       await invalidateReservationForCartChange();
 
-      const result = await requestJson<Cart>('/api/cart/clear', {
+      const result = await requestJson<Cart>('/cart/clear', {
         method: 'DELETE',
         headers: authHeaders,
       });
@@ -489,7 +519,7 @@ export default function HomePage() {
         throw new Error('Reservation is required before checkout');
       }
 
-      await requestJson<Order>('/api/orders/checkout', {
+      await requestJson<Order>('/orders/checkout', {
         method: 'POST',
         headers: authHeaders,
         body: JSON.stringify({
@@ -497,9 +527,9 @@ export default function HomePage() {
           address: {
             receiverName: checkout.receiverName,
             phone: checkout.phone,
-            line1: checkout.line1,
+            addressLine: checkout.addressLine,
             district: checkout.district,
-            city: checkout.city,
+            province: checkout.province,
             country: checkout.country,
           },
           paymentMethod: checkout.paymentMethod,
@@ -520,10 +550,12 @@ export default function HomePage() {
 
   async function advanceOrder(order: Order) {
     const target = nextOrderStatus(order.status);
-    if (!target || !isAuthenticated || auth?.user.role !== 'admin') return;
+    if (!target || !isAuthenticated || !['super_admin', 'admin', 'manager'].includes(auth?.user.role ?? '')) {
+      return;
+    }
 
     try {
-      await requestJson<Order>(`/api/orders/${order.id}/status`, {
+      await requestJson<Order>(`/orders/${order.id}/status`, {
         method: 'PATCH',
         headers: authHeaders,
         body: JSON.stringify({ status: target }),
@@ -570,16 +602,20 @@ export default function HomePage() {
   }, [isAuthenticated]);
 
   return (
-    <main className="page">
+    <main className="page" data-testid="home-page">
       <section className="hero">
         <h1>BanHang Platform</h1>
-        <p>Next.js frontend + NestJS backend, structured toward sprint implementation.</p>
-        {notice && <p className={`notice ${notice.type}`}>{notice.message}</p>}
+        <p>Next.js frontend + NestJS backend with versioned API, auth hardening, and expanded commerce modules.</p>
+        {notice && (
+          <p className={`notice ${notice.type}`} data-testid="notice">
+            {notice.message}
+          </p>
+        )}
       </section>
 
       <section className="panel auth-panel">
         <h2>Authentication</h2>
-        <form className="auth-form" onSubmit={submitAuth}>
+        <form className="auth-form" onSubmit={submitAuth} data-testid="auth-form">
           <input
             type="email"
             placeholder="Email"
@@ -614,7 +650,7 @@ export default function HomePage() {
             Logout
           </button>
         </form>
-        <p className="meta-line">
+        <p className="meta-line" data-testid="session-line">
           Session: {isAuthenticated ? `${auth?.user.fullName} (${auth?.user.role})` : 'Not logged in'}
         </p>
       </section>
@@ -644,8 +680,8 @@ export default function HomePage() {
             >
               <option value="">All categories</option>
               {categories.map((category) => (
-                <option key={category} value={category}>
-                  {category}
+                <option key={category.value} value={category.value}>
+                  {category.label}
                 </option>
               ))}
             </select>
@@ -673,6 +709,7 @@ export default function HomePage() {
               <option value="price_asc">Price ascending</option>
               <option value="price_desc">Price descending</option>
               <option value="rating_desc">Rating descending</option>
+              <option value="featured">Featured</option>
             </select>
             <label className="checkbox">
               <input
@@ -689,11 +726,11 @@ export default function HomePage() {
             </button>
           </div>
 
-          <div className="card-grid">
+          <div className="card-grid" data-testid="catalog-grid">
             {products.map((product) => (
-              <article key={product.id} className="product-card">
+              <article key={product.id} className="product-card" data-testid={`product-card-${product.id}`}>
                 <h3>{product.name}</h3>
-                <p className="muted">{product.category}</p>
+                <p className="muted">{product.category?.name ?? 'Uncategorized'}</p>
                 <p>{product.description}</p>
                 <p className="muted">SKU: {product.sku}</p>
                 <p className="muted">Rating: {product.rating} | Stock: {product.stock}</p>
@@ -737,7 +774,7 @@ export default function HomePage() {
           </div>
         </div>
 
-        <aside className="panel cart-panel">
+        <aside className="panel cart-panel" data-testid="cart-panel">
           <div className="panel-head">
             <h2>Cart</h2>
             <span>{cart.totalItems} items</span>
@@ -772,7 +809,9 @@ export default function HomePage() {
             {!cart.items.length && <p className="muted">Cart is empty.</p>}
           </div>
 
-          <p className="cart-total">Subtotal: {toCurrency(cart.subtotal)}</p>
+          <p className="cart-total" data-testid="cart-subtotal">Subtotal: {toCurrency(cart.subtotal)}</p>
+          <p className="muted">Discount: {toCurrency(cart.discountAmount)}</p>
+          <p className="muted" data-testid="cart-total">Total: {toCurrency(cart.total)}</p>
           <button type="button" className="alt" onClick={() => void clearCart()} disabled={!cart.items.length}>
             Clear cart
           </button>
@@ -819,8 +858,10 @@ export default function HomePage() {
                 />
                 <input
                   placeholder="Address"
-                  value={checkout.line1}
-                  onChange={(event) => setCheckout((prev) => ({ ...prev, line1: event.target.value }))}
+                  value={checkout.addressLine}
+                  onChange={(event) =>
+                    setCheckout((prev) => ({ ...prev, addressLine: event.target.value }))
+                  }
                 />
                 <input
                   placeholder="District"
@@ -830,9 +871,11 @@ export default function HomePage() {
                   }
                 />
                 <input
-                  placeholder="City"
-                  value={checkout.city}
-                  onChange={(event) => setCheckout((prev) => ({ ...prev, city: event.target.value }))}
+                  placeholder="Province"
+                  value={checkout.province}
+                  onChange={(event) =>
+                    setCheckout((prev) => ({ ...prev, province: event.target.value }))
+                  }
                 />
                 <input
                   placeholder="Country"
@@ -858,6 +901,10 @@ export default function HomePage() {
                   <option value="cod">COD</option>
                   <option value="vnpay">VNPay</option>
                   <option value="momo">MoMo</option>
+                  <option value="zalopay">ZaloPay</option>
+                  <option value="stripe">Stripe</option>
+                  <option value="paypal">PayPal</option>
+                  <option value="bank_transfer">Bank transfer</option>
                 </select>
                 <select
                   value={checkout.shippingMethod}
@@ -870,6 +917,8 @@ export default function HomePage() {
                 >
                   <option value="standard">Standard (30,000)</option>
                   <option value="express">Express (60,000)</option>
+                  <option value="same_day">Same day (90,000)</option>
+                  <option value="pickup">Pickup (0)</option>
                 </select>
                 <input
                   placeholder="Notes"
@@ -883,11 +932,11 @@ export default function HomePage() {
               <div className="checkout-summary">
                 <p>Receiver: {checkout.receiverName}</p>
                 <p>
-                  Address: {checkout.line1}, {checkout.district}, {checkout.city}, {checkout.country}
+                  Address: {checkout.addressLine}, {checkout.district}, {checkout.province}, {checkout.country}
                 </p>
                 <p>Payment: {checkout.paymentMethod}</p>
                 <p>Shipping: {checkout.shippingMethod}</p>
-                <p>Cart total: {toCurrency(cart.subtotal)}</p>
+                <p>Cart total: {toCurrency(cart.total)}</p>
                 <p>
                   Reservation:{' '}
                   {reservation
@@ -926,7 +975,7 @@ export default function HomePage() {
         </aside>
       </section>
 
-      <section className="panel">
+      <section className="panel" data-testid="orders-panel">
         <div className="panel-head">
           <h2>Orders</h2>
           <button type="button" className="alt" onClick={() => void loadOrders()}>
@@ -940,16 +989,16 @@ export default function HomePage() {
           {orders.map((order) => {
             const next = nextOrderStatus(order.status);
             return (
-              <article key={order.id} className="order-card">
+              <article key={order.id} className="order-card" data-testid={`order-card-${order.id}`}>
                 <p>
-                  <strong>{order.id}</strong>
+                  <strong>{order.orderNumber ?? order.id}</strong>
                 </p>
                 <p>Status: {order.status}</p>
                 <p>Payment: {order.paymentMethod} / {order.paymentStatus}</p>
                 <p>Shipping: {order.shippingMethod} / {order.shippingStatus}</p>
                 <p>Total: {toCurrency(order.total)}</p>
                 <p>Created: {new Date(order.createdAt).toLocaleString('vi-VN')}</p>
-                {auth?.user.role === 'admin' && next && (
+                {['super_admin', 'admin', 'manager'].includes(auth?.user.role ?? '') && next && (
                   <button type="button" onClick={() => void advanceOrder(order)}>
                     Move to {next}
                   </button>

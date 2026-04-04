@@ -20,6 +20,10 @@ export class QueryProductsDto {
   category?: string;
 
   @IsOptional()
+  @IsString()
+  brand?: string;
+
+  @IsOptional()
   @Type(() => Number)
   @IsNumber()
   @Min(0)
@@ -37,8 +41,13 @@ export class QueryProductsDto {
   inStock?: boolean;
 
   @IsOptional()
-  @IsIn(['price_asc', 'price_desc', 'rating_desc', 'newest'])
-  sort?: 'price_asc' | 'price_desc' | 'rating_desc' | 'newest';
+  @Transform(({ value }) => value === 'true' || value === true)
+  @IsBoolean()
+  featured?: boolean;
+
+  @IsOptional()
+  @IsIn(['price_asc', 'price_desc', 'rating_desc', 'newest', 'featured'])
+  sort?: 'price_asc' | 'price_desc' | 'rating_desc' | 'newest' | 'featured';
 
   @IsOptional()
   @Type(() => Number)
