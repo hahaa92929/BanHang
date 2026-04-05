@@ -6,6 +6,7 @@ import {
   Param,
   Patch,
   Post,
+  Query,
   Req,
   UseGuards,
 } from '@nestjs/common';
@@ -29,7 +30,7 @@ export class CartController {
 
   @Post('items')
   addItem(@Req() request: RequestWithUser, @Body() body: AddCartItemDto) {
-    return this.service.addItem(request.user!.sub, body.productId, body.quantity);
+    return this.service.addItem(request.user!.sub, body.productId, body.quantity, body.variantId);
   }
 
   @Patch('items/:productId')
@@ -37,13 +38,18 @@ export class CartController {
     @Req() request: RequestWithUser,
     @Param('productId') productId: string,
     @Body() body: UpdateCartItemDto,
+    @Query('variantId') variantId?: string,
   ) {
-    return this.service.setQuantity(request.user!.sub, productId, body.quantity);
+    return this.service.setQuantity(request.user!.sub, productId, body.quantity, variantId);
   }
 
   @Delete('items/:productId')
-  remove(@Req() request: RequestWithUser, @Param('productId') productId: string) {
-    return this.service.removeItem(request.user!.sub, productId);
+  remove(
+    @Req() request: RequestWithUser,
+    @Param('productId') productId: string,
+    @Query('variantId') variantId?: string,
+  ) {
+    return this.service.removeItem(request.user!.sub, productId, variantId);
   }
 
   @Post('merge')
@@ -62,8 +68,12 @@ export class CartController {
   }
 
   @Post('save-for-later/:productId')
-  saveForLater(@Req() request: RequestWithUser, @Param('productId') productId: string) {
-    return this.service.saveForLater(request.user!.sub, productId);
+  saveForLater(
+    @Req() request: RequestWithUser,
+    @Param('productId') productId: string,
+    @Query('variantId') variantId?: string,
+  ) {
+    return this.service.saveForLater(request.user!.sub, productId, variantId);
   }
 
   @Delete('clear')

@@ -1,9 +1,14 @@
 import assert from 'node:assert/strict';
-import test from 'node:test';
-import { NotFoundException } from '@nestjs/common';
+import { test } from 'node:test';
+import { BadRequestException, NotFoundException } from '@nestjs/common';
 import { ProductsService } from './products.service';
 
 function createProductsMock() {
+  const users = [
+    { id: 'u-reviewer', fullName: 'Reviewer Demo' },
+    { id: 'u-admin', fullName: 'Admin Demo' },
+    { id: 'u-pending', fullName: 'Pending Demo' },
+  ];
   const categories = [
     {
       id: 'c-root',
@@ -28,7 +33,6 @@ function createProductsMock() {
       updatedAt: new Date(),
     },
   ];
-
   const brands = [
     {
       id: 'b-apple',
@@ -42,7 +46,6 @@ function createProductsMock() {
       updatedAt: new Date(),
     },
   ];
-
   const products = [
     {
       id: 'p-1',
@@ -64,42 +67,300 @@ function createProductsMock() {
       updatedAt: new Date(),
       categoryId: 'c-phones',
       brandId: 'b-apple',
-      category: categories[0],
-      brand: brands[0],
-      media: [{ url: 'https://cdn.example.com/p-1.jpg', isPrimary: true, sortOrder: 0 }],
     },
   ];
+  const productMedia = [
+    {
+      id: 'pm-1',
+      productId: 'p-1',
+      url: 'https://cdn.example.com/p-1.jpg',
+      type: 'image',
+      altText: 'Primary photo',
+      isPrimary: true,
+      sortOrder: 0,
+      createdAt: new Date(),
+    },
+  ];
+  const warehouses = [
+    {
+      id: 'w-main',
+      code: 'MAIN',
+      name: 'Main Warehouse',
+      city: null,
+      isDefault: true,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    },
+  ];
+  const variants = [
+    {
+      id: 'pv-1',
+      productId: 'p-1',
+      sku: 'SKU-1-BLACK',
+      name: 'Black 128GB',
+      attributes: { color: 'Black', storage: '128GB' },
+      price: 20_000_000,
+      stock: 10,
+      isDefault: true,
+      isActive: true,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    },
+  ];
+  const inventoryLevels = [
+    {
+      id: 'il-1',
+      productId: 'p-1',
+      variantId: 'pv-1',
+      warehouseId: 'w-main',
+      available: 10,
+      reserved: 0,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    },
+  ];
+  const reviews = [
+    {
+      id: 'r-1',
+      userId: 'u-admin',
+      productId: 'p-1',
+      rating: 4,
+      title: 'Existing review',
+      content: 'Existing admin review for listing tests.',
+      mediaUrls: [],
+      isVerifiedPurchase: false,
+      status: 'published',
+      helpfulCount: 3,
+      adminReply: null,
+      adminReplyAt: null,
+      createdAt: new Date('2026-04-01T10:00:00.000Z'),
+      updatedAt: new Date('2026-04-01T10:00:00.000Z'),
+    },
+  ];
+  const reviewHelpfulVotes: Array<{
+    id: string;
+    userId: string;
+    reviewId: string;
+    createdAt: Date;
+  }> = [];
   let lastFindManyArgs: Record<string, unknown> | null = null;
 
-  const prisma = {
+  function findUser(userId: string) {
+    return users.find((user) => user.id === userId) ?? { id: userId, fullName: 'Unknown User' };
+  }
+
+  function materializeVariant(variant: (typeof variants)[number]) {
+    return {
+      ...variant,
+      inventoryLevels: inventoryLevels
+        .filter((level) => level.variantId === variant.id)
+        .map((level) => ({
+          ...level,
+          warehouse: warehouses.find((warehouse) => warehouse.id === level.warehouseId)!,
+        })),
+    };
+  }
+
+  function materializeProduct(product: (typeof products)[number]) {
+    return {
+      ...product,
+      category: categories.find((category) => category.id === product.categoryId) ?? null,
+      brand: brands.find((brand) => brand.id === product.brandId) ?? null,
+      media: productMedia
+        .filter((item) => item.productId === product.id)
+        .sort((left, right) => Number(right.isPrimary) - Number(left.isPrimary) || left.sortOrder - right.sortOrder),
+      variants: variants
+        .filter((variant) => variant.productId === product.id)
+        .sort((left, right) => Number(right.isDefault) - Number(left.isDefault))
+        .map((variant) => materializeVariant(variant)),
+    };
+  }
+
+  function filterReviews(where?: Record<string, unknown>) {
+    return reviews.filter((review) => {
+      if (!where) {
+        return true;
+      }
+
+      if (typeof where.productId === 'string' && review.productId !== where.productId) {
+        return false;
+      }
+
+      if (typeof where.status === 'string' && review.status !== where.status) {
+        return false;
+      }
+
+      if (typeof where.rating === 'number' && review.rating !== where.rating) {
+        return false;
+      }
+
+      if (typeof where.isVerifiedPurchase === 'boolean' && review.isVerifiedPurchase !== where.isVerifiedPurchase) {
+        return false;
+      }
+
+      if (
+        where.mediaUrls &&
+        typeof where.mediaUrls === 'object' &&
+        'isEmpty' in where.mediaUrls &&
+        (where.mediaUrls as { isEmpty?: boolean }).isEmpty === false &&
+        review.mediaUrls.length === 0
+      ) {
+        return false;
+      }
+
+      if (
+        where.userId_productId &&
+        typeof where.userId_productId === 'object' &&
+        'userId' in where.userId_productId &&
+        'productId' in where.userId_productId
+      ) {
+        const compound = where.userId_productId as { userId: string; productId: string };
+        return review.userId === compound.userId && review.productId === compound.productId;
+      }
+
+      if (typeof where.id === 'string' && review.id !== where.id) {
+        return false;
+      }
+
+      return true;
+    });
+  }
+
+  const tx = {
     product: {
       count: async () => products.length,
       findMany: async (args?: Record<string, unknown>) => {
         lastFindManyArgs = args ?? null;
-        return products;
+        return products.map((product) => materializeProduct(product));
       },
-      findFirst: async (args: { where: { OR: Array<{ id?: string; slug?: string }> } }) =>
-        products.find((product) =>
-          args.where.OR.some((condition) => product.id === condition.id || product.slug === condition.slug),
-        ) ?? null,
-      findUnique: async (args: { where: { id: string } }) =>
-        products.find((product) => product.id === args.where.id) ?? null,
-      create: async (args: { data: Record<string, unknown> }) => ({
-        id: 'p-new',
-        createdAt: new Date(),
-        updatedAt: new Date(),
-        rating: 0,
-        totalReviews: 0,
-        totalSold: 0,
-        category: categories.find((category) => category.id === args.data.categoryId) ?? null,
-        brand: brands.find((brand) => brand.id === args.data.brandId) ?? null,
-        media: [],
-        ...args.data,
-      }),
-      update: async (args: { where: { id: string }; data: Record<string, unknown> }) => ({
-        ...products[0],
-        ...args.data,
-      }),
+      findFirst: async (args: { where: { OR: Array<{ id?: string; slug?: string }> } }) => {
+        const product =
+          products.find((item) =>
+            args.where.OR.some((condition) => item.id === condition.id || item.slug === condition.slug),
+          ) ?? null;
+        return product ? materializeProduct(product) : null;
+      },
+      findUnique: async (args: {
+        where: { id: string };
+        select?: Record<string, unknown>;
+      }) => {
+        const product = products.find((item) => item.id === args.where.id) ?? null;
+        if (!product) {
+          return null;
+        }
+
+        if (args.select) {
+          return Object.fromEntries(
+            Object.entries(args.select)
+              .filter(([, value]) => Boolean(value))
+              .map(([key, value]) => {
+                if (key === 'variants' && typeof value === 'object') {
+                  return [
+                    key,
+                    variants
+                      .filter((variant) => variant.productId === product.id && variant.isActive)
+                      .map((variant) => ({ id: variant.id })),
+                  ];
+                }
+
+                return [key, (product as Record<string, unknown>)[key]];
+              }),
+          );
+        }
+
+        return materializeProduct(product);
+      },
+      create: async (args: { data: Record<string, unknown> }) => {
+        const product = {
+          id: 'p-new',
+          createdAt: new Date(),
+          updatedAt: new Date(),
+          rating: 0,
+          totalReviews: 0,
+          totalSold: 0,
+          tags: [],
+          status: 'active',
+          isFeatured: false,
+          metaTitle: null,
+          metaDescription: null,
+          categoryId: null,
+          brandId: null,
+          ...args.data,
+        } as (typeof products)[number];
+        products.push(product);
+        return materializeProduct(product);
+      },
+      update: async (args: { where: { id: string }; data: Record<string, unknown> }) => {
+        const product = products.find((item) => item.id === args.where.id);
+        if (!product) {
+          throw new Error('product not found');
+        }
+        Object.assign(product, args.data, { updatedAt: new Date() });
+        return materializeProduct(product);
+      },
+    },
+    productVariant: {
+      create: async (args: { data: Record<string, unknown> }) => {
+        const variant = {
+          id: `pv-${variants.length + 1}`,
+          createdAt: new Date(),
+          updatedAt: new Date(),
+          attributes: null,
+          stock: 0,
+          isDefault: false,
+          isActive: true,
+          ...args.data,
+        } as (typeof variants)[number];
+        variants.push(variant);
+        return materializeVariant(variant);
+      },
+      deleteMany: async (args: { where: { productId: string } }) => {
+        const before = variants.length;
+        for (let index = variants.length - 1; index >= 0; index -= 1) {
+          if (variants[index].productId === args.where.productId) {
+            variants.splice(index, 1);
+          }
+        }
+        return { count: before - variants.length };
+      },
+    },
+    inventoryLevel: {
+      create: async (args: { data: Record<string, unknown> }) => {
+        const level = {
+          id: `il-${inventoryLevels.length + 1}`,
+          createdAt: new Date(),
+          updatedAt: new Date(),
+          reserved: 0,
+          ...args.data,
+        } as (typeof inventoryLevels)[number];
+        inventoryLevels.push(level);
+        return level;
+      },
+      deleteMany: async (args: { where: { productId: string } }) => {
+        const before = inventoryLevels.length;
+        for (let index = inventoryLevels.length - 1; index >= 0; index -= 1) {
+          if (inventoryLevels[index].productId === args.where.productId) {
+            inventoryLevels.splice(index, 1);
+          }
+        }
+        return { count: before - inventoryLevels.length };
+      },
+    },
+    warehouse: {
+      findFirst: async () => warehouses.find((warehouse) => warehouse.isDefault) ?? null,
+      findUnique: async (args: { where: { code: string } }) =>
+        warehouses.find((warehouse) => warehouse.code === args.where.code) ?? null,
+      create: async (args: { data: Record<string, unknown> }) => {
+        const warehouse = {
+          id: `w-${warehouses.length + 1}`,
+          city: null,
+          createdAt: new Date(),
+          updatedAt: new Date(),
+          ...args.data,
+        } as (typeof warehouses)[number];
+        warehouses.push(warehouse);
+        return warehouse;
+      },
     },
     category: {
       findMany: async () => categories,
@@ -127,15 +388,160 @@ function createProductsMock() {
     },
     productMedia: {
       updateMany: async () => ({ count: 1 }),
-      create: async (args: { data: Record<string, unknown> }) => ({
-        id: 'pm-1',
-        createdAt: new Date(),
-        ...args.data,
-      }),
+      create: async (args: { data: Record<string, unknown> }) => {
+        const media = {
+          id: `pm-${productMedia.length + 1}`,
+          createdAt: new Date(),
+          ...args.data,
+        };
+        productMedia.push(media as never);
+        return media;
+      },
+    },
+    review: {
+      count: async (args?: { where?: Record<string, unknown> }) =>
+        filterReviews(args?.where).length,
+      findMany: async (args?: {
+        where?: Record<string, unknown>;
+        select?: Record<string, boolean>;
+        include?: Record<string, unknown>;
+      }) => {
+        const filtered = filterReviews(args?.where).map((review) => ({
+          ...review,
+          user: {
+            id: findUser(review.userId).id,
+            fullName: findUser(review.userId).fullName,
+          },
+        }));
+
+        if (args?.select) {
+          return filtered.map((review) =>
+            Object.fromEntries(
+              Object.entries(args.select!)
+                .filter(([, value]) => Boolean(value))
+                .map(([key]) => [key, (review as Record<string, unknown>)[key]]),
+            ),
+          );
+        }
+
+        return filtered;
+      },
+      findUnique: async (args: { where: { userId_productId: { userId: string; productId: string } } }) =>
+        filterReviews({ userId_productId: args.where.userId_productId })[0] ?? null,
+      create: async (args: {
+        data: Record<string, unknown>;
+        include?: { user?: { select: { id: true; fullName: true } } };
+      }) => {
+        const review = {
+          id: `r-${reviews.length + 1}`,
+          helpfulCount: 0,
+          adminReply: null,
+          adminReplyAt: null,
+          createdAt: new Date(),
+          updatedAt: new Date(),
+          ...args.data,
+        };
+        reviews.push(review);
+        return args.include?.user
+          ? {
+              ...review,
+              user: findUser(review.userId as string),
+            }
+          : review;
+      },
+      findFirst: async (args: { where: Record<string, unknown>; select?: Record<string, boolean> }) => {
+        const review =
+          filterReviews({
+            id: args.where.id,
+            productId: args.where.productId,
+            status: args.where.status,
+          })[0] ?? null;
+
+        if (!review) {
+          return null;
+        }
+
+        if (args.select) {
+          return Object.fromEntries(
+            Object.entries(args.select)
+              .filter(([, value]) => Boolean(value))
+              .map(([key]) => [key, (review as Record<string, unknown>)[key]]),
+          );
+        }
+
+        return review;
+      },
+      update: async (args: {
+        where: { id: string };
+        data: Record<string, unknown>;
+        select?: Record<string, boolean>;
+        include?: { user?: { select: { id: true; fullName: true } } };
+      }) => {
+        const review = reviews.find((item) => item.id === args.where.id);
+        if (!review) {
+          throw new Error('review not found');
+        }
+        const nextData = { ...args.data };
+        delete nextData.helpfulCount;
+        Object.assign(review, nextData, { updatedAt: new Date() });
+        if (
+          args.data.helpfulCount &&
+          typeof args.data.helpfulCount === 'object' &&
+          'increment' in args.data.helpfulCount
+        ) {
+          review.helpfulCount += Number((args.data.helpfulCount as { increment: number }).increment);
+        }
+        if (args.select) {
+          return Object.fromEntries(
+            Object.entries(args.select)
+              .filter(([, value]) => Boolean(value))
+              .map(([key]) => [key, (review as Record<string, unknown>)[key]]),
+          );
+        }
+        return args.include?.user
+          ? {
+              ...review,
+              user: findUser(review.userId),
+            }
+          : review;
+      },
+    },
+    reviewHelpfulVote: {
+      findUnique: async (args: { where: { userId_reviewId: { userId: string; reviewId: string } } }) =>
+        reviewHelpfulVotes.find(
+          (vote) =>
+            vote.userId === args.where.userId_reviewId.userId &&
+            vote.reviewId === args.where.userId_reviewId.reviewId,
+        ) ?? null,
+      create: async (args: { data: { userId: string; reviewId: string } }) => {
+        const vote = {
+          id: `rhv-${reviewHelpfulVotes.length + 1}`,
+          createdAt: new Date(),
+          ...args.data,
+        };
+        reviewHelpfulVotes.push(vote);
+        return vote;
+      },
+    },
+    order: {
+      count: async (args?: { where?: { userId?: string } }) => (args?.where?.userId === 'u-pending' ? 0 : 1),
     },
   };
 
-  return { prisma, getLastFindManyArgs: () => lastFindManyArgs };
+  const prisma = {
+    ...tx,
+    $transaction: async <T>(callback: (transaction: typeof tx) => Promise<T>) => callback(tx),
+  };
+
+  return {
+    prisma,
+    getLastFindManyArgs: () => lastFindManyArgs,
+    reviews,
+    reviewHelpfulVotes,
+    products,
+    variants,
+    inventoryLevels,
+  };
 }
 
 test('products.findAll returns catalog data with categories and brands', async () => {
@@ -170,11 +576,31 @@ test('products.createProduct resolves category and brand slugs', async () => {
     stock: 7,
     categorySlug: 'phones',
     brandSlug: 'apple',
+    variants: [
+      {
+        sku: 'SKU-NEW-SILVER',
+        name: 'Silver 14"',
+        price: 32_000_000,
+        warehouseStocks: [{ warehouseCode: 'HN', quantity: 3 }],
+      },
+      {
+        sku: 'SKU-NEW-BLACK',
+        name: 'Space Black 14"',
+        price: 33_000_000,
+        isDefault: true,
+        warehouseStocks: [{ warehouseCode: 'HCM', quantity: 4 }],
+      },
+    ],
   });
 
   assert.equal(created.sku, 'SKU-NEW');
   assert.equal(created.category.id, 'c-phones');
   assert.equal(created.brand.id, 'b-apple');
+  assert.equal(created.variants.length, 2);
+  assert.equal(created.stock, 7);
+  assert.equal(created.price, 33_000_000);
+  assert.equal(created.variants[0].isDefault, true);
+  assert.equal(created.variants[0].inventoryLevels[0].warehouse.code, 'HCM');
 });
 
 test('products.findOne throws NotFoundException for missing product', async () => {
@@ -218,6 +644,21 @@ test('products.update archive import export and addMedia cover admin catalog wor
     price: 25_000_000,
     brandSlug: 'apple',
     categorySlug: 'phones',
+    variants: [
+      {
+        sku: 'SKU-1-BLUE',
+        name: 'Blue 256GB',
+        price: 25_000_000,
+        isDefault: true,
+        warehouseStocks: [{ warehouseCode: 'MAIN', quantity: 6 }],
+      },
+      {
+        sku: 'SKU-1-NATURAL',
+        name: 'Natural 256GB',
+        price: 26_000_000,
+        warehouseStocks: [{ warehouseCode: 'DN', quantity: 2 }],
+      },
+    ],
   });
   const archived = await service.archiveProduct('p-1');
   const imported = await service.importProducts({
@@ -240,6 +681,8 @@ test('products.update archive import export and addMedia cover admin catalog wor
   });
 
   assert.equal(updated.name, 'iPhone 15 Pro');
+  assert.equal(updated.variants.length, 2);
+  assert.equal(updated.stock, 8);
   assert.equal(archived.status, 'archived');
   assert.equal(imported.count, 1);
   assert.equal(imported.data[0].sku, 'SKU-2');
@@ -327,4 +770,169 @@ test('products.findAll covers price stock and sort branches and createProduct su
   assert.deepEqual(featuredArgs.orderBy, [{ isFeatured: 'desc' }, { createdAt: 'desc' }]);
   assert.equal(uncategorized.category, null);
   assert.equal(uncategorized.brand, null);
+  assert.equal(uncategorized.variants.length, 1);
+  assert.equal(uncategorized.variants[0].isDefault, true);
+});
+
+test('products reject invalid variant definitions', async () => {
+  const { prisma } = createProductsMock();
+  const service = new ProductsService(prisma as never);
+
+  await assert.rejects(
+    async () =>
+      service.createProduct({
+        sku: 'SKU-DUP',
+        name: 'Variant Fail',
+        description: 'Should fail because duplicate variant SKU is provided.',
+        price: 10_000,
+        stock: 2,
+        variants: [
+          { sku: 'SKU-DUP-1', name: 'A', stock: 1 },
+          { sku: 'SKU-DUP-1', name: 'B', stock: 1 },
+        ],
+      }),
+    (error: unknown) => error instanceof BadRequestException,
+  );
+
+  await assert.rejects(
+    async () =>
+      service.createProduct({
+        sku: 'SKU-DEFAULT',
+        name: 'Variant Fail',
+        description: 'Should fail because more than one default variant exists.',
+        price: 10_000,
+        stock: 2,
+        variants: [
+          { sku: 'SKU-DEFAULT-1', name: 'A', stock: 1, isDefault: true },
+          { sku: 'SKU-DEFAULT-2', name: 'B', stock: 1, isDefault: true },
+        ],
+      }),
+    (error: unknown) => error instanceof BadRequestException,
+  );
+
+  await assert.rejects(
+    async () =>
+      service.updateProduct('p-1', {
+        stock: 99,
+      }),
+    (error: unknown) =>
+      error instanceof BadRequestException &&
+      error.message === 'Use variants payload when updating stock or price for variant-backed products',
+  );
+});
+
+test('products.listReviews createReview helpful vote and replyReview cover review workflows', async () => {
+  const { prisma, reviews, products, reviewHelpfulVotes } = createProductsMock();
+  const service = new ProductsService(prisma as never);
+
+  const before = await service.listReviews('iphone-15', {
+    sort: 'helpful',
+    page: 1,
+    limit: 10,
+  });
+  const created = await service.createReview('u-reviewer', 'iphone-15', {
+    rating: 5,
+    title: 'Rat hai long',
+    content: 'San pham dung on dinh va giao hang nhanh hon mong doi.',
+    mediaUrls: ['https://cdn.example.com/review.jpg'],
+  });
+  const helpful = await service.markReviewHelpful('u-admin', 'iphone-15', created.id);
+  const helpfulAgain = await service.markReviewHelpful('u-admin', 'iphone-15', created.id);
+  const replied = await service.replyReview('iphone-15', created.id, 'Cam on ban da danh gia.');
+  const after = await service.listReviews('iphone-15', {
+    rating: 5,
+    sort: 'rating_desc',
+    verifiedOnly: true,
+    withMedia: true,
+    page: 1,
+    limit: 10,
+  });
+
+  assert.equal(before.summary.totalReviews, 1);
+  assert.equal(created.isVerifiedPurchase, true);
+  assert.equal(created.status, 'published');
+  assert.equal(reviews.length, 2);
+  assert.equal(products[0].totalReviews, 2);
+  assert.equal(products[0].rating, 4.5);
+  assert.equal(helpful.applied, true);
+  assert.equal(helpful.helpfulCount, 1);
+  assert.equal(helpfulAgain.applied, false);
+  assert.equal(reviewHelpfulVotes.length, 1);
+  assert.equal(replied.adminReply, 'Cam on ban da danh gia.');
+  assert.equal(after.total, 1);
+  assert.equal(after.summary.averageRating, 4.5);
+  assert.equal(after.summary.ratingBreakdown['5'], 1);
+});
+
+test('products.review moderation handles pending reviews and guard rails', async () => {
+  const { prisma, products, reviewHelpfulVotes } = createProductsMock();
+  const service = new ProductsService(prisma as never);
+
+  const pending = await service.createReview('u-pending', 'iphone-15', {
+    rating: 5,
+    content: 'Can admin review this feedback before publishing.',
+  });
+  const moderation = await service.listModerationReviews('iphone-15', {
+    status: 'pending',
+    page: 1,
+    limit: 10,
+  });
+  const published = await service.moderateReview('iphone-15', pending.id, {
+    status: 'published',
+    adminReply: 'Da duyet review.',
+  });
+
+  assert.equal(pending.status, 'pending');
+  assert.equal(moderation.total, 1);
+  assert.equal(moderation.summary.statusBreakdown.pending, 1);
+  assert.equal(published.status, 'published');
+  assert.equal(published.adminReply, 'Da duyet review.');
+  assert.equal(products[0].totalReviews, 2);
+  assert.equal(products[0].rating, 4.5);
+
+  await assert.rejects(
+    async () => service.markReviewHelpful('u-pending', 'iphone-15', pending.id),
+    (error: unknown) => error instanceof BadRequestException,
+  );
+
+  const helpful = await service.markReviewHelpful('u-reviewer', 'iphone-15', pending.id);
+  assert.equal(helpful.applied, true);
+  assert.equal(reviewHelpfulVotes.length, 1);
+});
+
+test('products.review workflows reject duplicates and missing references', async () => {
+  const { prisma } = createProductsMock();
+  const service = new ProductsService(prisma as never);
+
+  await assert.rejects(
+    async () =>
+      service.createReview('u-admin', 'iphone-15', {
+        rating: 4,
+        content: 'Duplicate review should fail.',
+      }),
+    (error: unknown) => error instanceof BadRequestException,
+  );
+
+  await assert.rejects(
+    async () => service.replyReview('iphone-15', 'missing-review', 'Reply'),
+    (error: unknown) => error instanceof NotFoundException,
+  );
+
+  await assert.rejects(
+    async () =>
+      service.moderateReview('iphone-15', 'missing-review', {
+        status: 'rejected',
+      }),
+    (error: unknown) => error instanceof NotFoundException,
+  );
+
+  await assert.rejects(
+    async () => service.listReviews('missing-product', {}),
+    (error: unknown) => error instanceof NotFoundException,
+  );
+
+  await assert.rejects(
+    async () => service.markReviewHelpful('u-reviewer', 'iphone-15', 'missing-review'),
+    (error: unknown) => error instanceof NotFoundException,
+  );
 });

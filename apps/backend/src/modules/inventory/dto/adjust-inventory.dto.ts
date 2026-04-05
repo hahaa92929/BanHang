@@ -4,6 +4,15 @@ export class AdjustInventoryDto {
   @IsString()
   productId!: string;
 
+  @IsOptional()
+  @IsString()
+  variantId?: string;
+
+  @IsOptional()
+  @IsString()
+  @MinLength(2)
+  warehouseCode?: string;
+
   @IsInt()
   quantity!: number;
 

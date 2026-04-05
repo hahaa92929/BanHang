@@ -55,11 +55,7 @@ export class OrdersService {
           status: 'active',
           expiresAt: { gt: new Date() },
         },
-        include: {
-          items: {
-            include: { product: true },
-          },
-        },
+        include: this.reservationInclude(),
         orderBy: { createdAt: 'desc' },
       });
 
@@ -79,11 +75,7 @@ export class OrdersService {
           status: 'active',
           expiresAt: { gt: new Date() },
         },
-        include: {
-          items: {
-            include: { product: true },
-          },
-        },
+        include: this.reservationInclude(),
         orderBy: { createdAt: 'desc' },
       });
 
@@ -93,7 +85,7 @@ export class OrdersService {
 
       const cartRows = await tx.cartItem.findMany({
         where: { userId },
-        include: { product: true },
+        include: { product: true, variant: true },
       });
 
       if (!cartRows.length) {
@@ -105,12 +97,46 @@ export class OrdersService {
           throw new BadRequestException(`${row.product.name} is not available`);
         }
 
-        if (row.quantity > row.product.stock) {
+        if (!row.variant) {
+          throw new BadRequestException(`Variant is missing for ${row.product.name}`);
+        }
+
+        if (row.quantity > row.variant.stock) {
           throw new BadRequestException(`Stock is not enough for ${row.product.name}`);
         }
       }
 
+      const reservedRows: Array<{
+        row: (typeof cartRows)[number];
+        allocations: Array<{ warehouseId: string; warehouseCode: string; warehouseName: string; quantity: number }>;
+      }> = [];
+
       for (const row of cartRows) {
+        const allocations = await this.reserveVariantStockInTx(
+          tx,
+          {
+            productId: row.productId,
+            productName: row.product.name,
+            variantId: row.variantId,
+            quantity: row.quantity,
+          },
+          userId,
+        );
+
+        const variantUpdated = await tx.productVariant.updateMany({
+          where: {
+            id: row.variantId,
+            stock: { gte: row.quantity },
+          },
+          data: {
+            stock: { decrement: row.quantity },
+          },
+        });
+
+        if (variantUpdated.count !== 1) {
+          throw new BadRequestException(`Stock conflict for ${row.product.name}`);
+        }
+
         const updated = await tx.product.updateMany({
           where: {
             id: row.productId,
@@ -125,14 +151,9 @@ export class OrdersService {
           throw new BadRequestException(`Stock conflict for ${row.product.name}`);
         }
 
-        await tx.inventoryMovement.create({
-          data: {
-            productId: row.productId,
-            actorId: userId,
-            type: 'reserve',
-            quantity: row.quantity,
-            note: 'Reserved from cart checkout flow',
-          },
+        reservedRows.push({
+          row,
+          allocations,
         });
       }
 
@@ -146,23 +167,30 @@ export class OrdersService {
         },
       });
 
-      await tx.inventoryReservationItem.createMany({
-        data: cartRows.map((row) => ({
-          reservationId: reservation.id,
-          productId: row.productId,
-          name: row.product.name,
-          unitPrice: row.product.price,
-          quantity: row.quantity,
-        })),
-      });
+      for (const reserved of reservedRows) {
+        const item = await tx.inventoryReservationItem.create({
+          data: {
+            reservationId: reservation.id,
+            productId: reserved.row.productId,
+            variantId: reserved.row.variantId,
+            name: reserved.row.product.name,
+            unitPrice: reserved.row.variant.price,
+            quantity: reserved.row.quantity,
+          },
+        });
+
+        await tx.inventoryReservationAllocation.createMany({
+          data: reserved.allocations.map((allocation) => ({
+            reservationItemId: item.id,
+            warehouseId: allocation.warehouseId,
+            quantity: allocation.quantity,
+          })),
+        });
+      }
 
       const reservationWithItems = await tx.inventoryReservation.findUnique({
         where: { id: reservation.id },
-        include: {
-          items: {
-            include: { product: true },
-          },
-        },
+        include: this.reservationInclude(),
       });
 
       if (!reservationWithItems) {
@@ -179,7 +207,7 @@ export class OrdersService {
 
       const reservation = await tx.inventoryReservation.findUnique({
         where: { id },
-        include: { items: true },
+        include: this.reservationInclude(),
       });
 
       if (!reservation) {
@@ -209,24 +237,7 @@ export class OrdersService {
         throw new BadRequestException('Reservation already updated');
       }
 
-      for (const item of reservation.items) {
-        await tx.product.update({
-          where: { id: item.productId },
-          data: {
-            stock: { increment: item.quantity },
-          },
-        });
-
-        await tx.inventoryMovement.create({
-          data: {
-            productId: item.productId,
-            actorId: userId,
-            type: 'release',
-            quantity: item.quantity,
-            note: 'Reservation canceled',
-          },
-        });
-      }
+      await this.releaseReservationStockInTx(tx, reservation.items, userId, 'Reservation canceled');
 
       return {
         success: true,
@@ -280,11 +291,7 @@ export class OrdersService {
 
       const reservation = await tx.inventoryReservation.findUnique({
         where: { id: payload.reservationId },
-        include: {
-          items: {
-            include: { product: true },
-          },
-        },
+        include: this.reservationInclude(),
       });
 
       if (!reservation) {
@@ -354,7 +361,8 @@ export class OrdersService {
         data: reservation.items.map((item) => ({
           orderId: order.id,
           productId: item.productId,
-          sku: item.product.sku,
+          variantId: item.variantId,
+          sku: item.variant?.sku ?? item.product.sku,
           name: item.name,
           unitPrice: item.unitPrice,
           quantity: item.quantity,
@@ -526,7 +534,27 @@ export class OrdersService {
       const order = await tx.order.findUnique({
         where: { id },
         include: {
-          items: true,
+          items: {
+            include: {
+              product: true,
+              variant: true,
+            },
+          },
+          reservation: {
+            include: {
+              items: {
+                include: {
+                  product: true,
+                  variant: true,
+                  allocations: {
+                    include: {
+                      warehouse: true,
+                    },
+                  },
+                },
+              },
+            },
+          },
           payments: true,
         },
       });
@@ -564,23 +592,42 @@ export class OrdersService {
         },
       });
 
-      for (const item of order.items) {
-        await tx.product.update({
-          where: { id: item.productId },
-          data: {
-            stock: { increment: item.quantity },
-          },
-        });
+      if (order.reservation?.items.length) {
+        await this.releaseReservationStockInTx(
+          tx,
+          order.reservation.items,
+          userId,
+          'Order canceled and stock restored',
+        );
+      } else {
+        for (const item of order.items) {
+          if (item.variantId) {
+            await tx.productVariant.update({
+              where: { id: item.variantId },
+              data: {
+                stock: { increment: item.quantity },
+              },
+            });
+          }
 
-        await tx.inventoryMovement.create({
-          data: {
-            productId: item.productId,
-            actorId: userId,
-            type: 'release',
-            quantity: item.quantity,
-            note: 'Order canceled and stock restored',
-          },
-        });
+          await tx.product.update({
+            where: { id: item.productId },
+            data: {
+              stock: { increment: item.quantity },
+            },
+          });
+
+          await tx.inventoryMovement.create({
+            data: {
+              productId: item.productId,
+              variantId: item.variantId,
+              actorId: userId,
+              type: 'release',
+              quantity: item.quantity,
+              note: 'Order canceled and stock restored',
+            },
+          });
+        }
       }
 
       await tx.orderStatusEvent.create({
@@ -697,6 +744,8 @@ export class OrdersService {
       items: order.items.map((item) => ({
         sku: item.sku,
         name: item.name,
+        variantId: item.variantId ?? null,
+        variantName: item.variant?.name ?? null,
         quantity: item.quantity,
         unitPrice: item.unitPrice,
         totalPrice: item.totalPrice,
@@ -733,7 +782,7 @@ export class OrdersService {
   ) {
     const reservation = await tx.inventoryReservation.findUnique({
       where: { id: reservationId },
-      include: { items: true },
+      include: this.reservationInclude(),
     });
 
     if (!reservation || reservation.status !== 'active') {
@@ -755,26 +804,165 @@ export class OrdersService {
       return false;
     }
 
-    for (const item of reservation.items) {
-      await tx.product.update({
-        where: { id: item.productId },
+    await this.releaseReservationStockInTx(
+      tx,
+      reservation.items,
+      actorUserId,
+      'Expired reservation released',
+    );
+
+    return true;
+  }
+
+  private async reserveVariantStockInTx(
+    tx: Prisma.TransactionClient,
+    item: {
+      productId: string;
+      productName: string;
+      variantId: string;
+      quantity: number;
+    },
+    actorUserId: string,
+  ) {
+    const levels = await tx.inventoryLevel.findMany({
+      where: {
+        productId: item.productId,
+        variantId: item.variantId,
+        available: { gt: 0 },
+      },
+      include: {
+        warehouse: true,
+      },
+    });
+
+    const sorted = [...levels].sort(
+      (left, right) =>
+        Number(right.warehouse.isDefault) - Number(left.warehouse.isDefault) ||
+        left.createdAt.getTime() - right.createdAt.getTime(),
+    );
+
+    const totalAvailable = sorted.reduce((sum, level) => sum + level.available, 0);
+    if (totalAvailable < item.quantity) {
+      throw new BadRequestException(`Stock is not enough for ${item.productName}`);
+    }
+
+    const allocations: Array<{
+      warehouseId: string;
+      warehouseCode: string;
+      warehouseName: string;
+      quantity: number;
+    }> = [];
+    let remaining = item.quantity;
+
+    for (const level of sorted) {
+      if (remaining <= 0) {
+        break;
+      }
+
+      const quantity = Math.min(level.available, remaining);
+      if (quantity <= 0) {
+        continue;
+      }
+
+      await tx.inventoryLevel.update({
+        where: {
+          variantId_warehouseId: {
+            variantId: item.variantId,
+            warehouseId: level.warehouseId,
+          },
+        },
         data: {
-          stock: { increment: item.quantity },
+          available: { decrement: quantity },
+          reserved: { increment: quantity },
         },
       });
 
       await tx.inventoryMovement.create({
         data: {
           productId: item.productId,
+          variantId: item.variantId,
+          warehouseId: level.warehouseId,
           actorId: actorUserId,
-          type: 'release',
-          quantity: item.quantity,
-          note: 'Expired reservation released',
+          type: 'reserve',
+          quantity,
+          note: 'Reserved from cart checkout flow',
+        },
+      });
+
+      allocations.push({
+        warehouseId: level.warehouseId,
+        warehouseCode: level.warehouse.code,
+        warehouseName: level.warehouse.name,
+        quantity,
+      });
+      remaining -= quantity;
+    }
+
+    return allocations;
+  }
+
+  private async releaseReservationStockInTx(
+    tx: Prisma.TransactionClient,
+    items: Array<{
+      productId: string;
+      variantId: string;
+      quantity: number;
+      allocations?: Array<{
+        warehouseId: string;
+        quantity: number;
+        warehouse?: {
+          code: string;
+          name: string;
+        };
+      }>;
+    }>,
+    actorUserId: string,
+    note: string,
+  ) {
+    for (const item of items) {
+      const allocations = item.allocations ?? [];
+
+      for (const allocation of allocations) {
+        await tx.inventoryLevel.update({
+          where: {
+            variantId_warehouseId: {
+              variantId: item.variantId,
+              warehouseId: allocation.warehouseId,
+            },
+          },
+          data: {
+            available: { increment: allocation.quantity },
+            reserved: { decrement: allocation.quantity },
+          },
+        });
+
+        await tx.inventoryMovement.create({
+          data: {
+            productId: item.productId,
+            variantId: item.variantId,
+            warehouseId: allocation.warehouseId,
+            actorId: actorUserId,
+            type: 'release',
+            quantity: allocation.quantity,
+            note,
+          },
+        });
+      }
+
+      await tx.productVariant.update({
+        where: { id: item.variantId },
+        data: {
+          stock: { increment: item.quantity },
+        },
+      });
+
+      await tx.product.update({
+        where: { id: item.productId },
+        data: {
+          stock: { increment: item.quantity },
         },
       });
     }
-
-    return true;
   }
 
   private async resolveAddress(
@@ -875,14 +1063,35 @@ export class OrdersService {
     return ['super_admin', 'admin', 'manager', 'staff'].includes(role);
   }
 
+  private reservationInclude() {
+    return {
+      items: {
+        include: {
+          product: true,
+          variant: true,
+          allocations: {
+            include: {
+              warehouse: true,
+            },
+          },
+        },
+      },
+    };
+  }
+
   private orderInclude() {
     return {
-      items: true,
+      items: {
+        include: {
+          product: true,
+          variant: true,
+        },
+      },
       history: {
         orderBy: { createdAt: 'asc' as const },
       },
       reservation: {
-        include: { items: true },
+        include: this.reservationInclude(),
       },
       coupon: true,
       payments: {
@@ -911,9 +1120,23 @@ export class OrdersService {
       expiresAt: Date;
       items: Array<{
         productId: string;
+        variantId: string;
         name: string;
         unitPrice: number;
         quantity: number;
+        variant?: {
+          sku: string;
+          name: string;
+          attributes: unknown;
+        } | null;
+        allocations?: Array<{
+          warehouseId: string;
+          quantity: number;
+          warehouse: {
+            code: string;
+            name: string;
+          };
+        }>;
       }>;
     },
   ) {
@@ -931,6 +1154,16 @@ export class OrdersService {
       totalItems,
       items: reservation.items.map((item) => ({
         productId: item.productId,
+        variantId: item.variantId,
+        variantSku: item.variant?.sku ?? null,
+        variantName: item.variant?.name ?? null,
+        variantAttributes: item.variant?.attributes ?? null,
+        allocations: (item.allocations ?? []).map((allocation) => ({
+          warehouseId: allocation.warehouseId,
+          warehouseCode: allocation.warehouse.code,
+          warehouseName: allocation.warehouse.name,
+          quantity: allocation.quantity,
+        })),
         name: item.name,
         unitPrice: item.unitPrice,
         quantity: item.quantity,

@@ -9,7 +9,10 @@ import {
   MaxLength,
   Min,
   MinLength,
+  ValidateNested,
 } from 'class-validator';
+import { Type } from 'class-transformer';
+import { ProductVariantDto } from './product-variant.dto';
 
 export class UpdateProductDto {
   @IsOptional()
@@ -74,4 +77,11 @@ export class UpdateProductDto {
   @IsString()
   @MaxLength(180)
   metaDescription?: string;
+
+  @IsOptional()
+  @IsArray()
+  @ArrayMaxSize(100)
+  @ValidateNested({ each: true })
+  @Type(() => ProductVariantDto)
+  variants?: ProductVariantDto[];
 }

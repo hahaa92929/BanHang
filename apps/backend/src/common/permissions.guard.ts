@@ -30,8 +30,10 @@ export class PermissionsGuard implements CanActivate {
       throw new UnauthorizedException('Unauthorized');
     }
 
+    const effectivePermissions = request.user.permissions;
     const denied = requiredPermissions.find(
-      (permission) => !hasPermission(request.user!.role, permission),
+      (permission) =>
+        effectivePermissions ? !effectivePermissions.includes(permission) : !hasPermission(request.user!.role, permission),
     );
 
     if (denied) {

@@ -4,6 +4,7 @@ import { JwtGuard } from '../../common/jwt.guard';
 import { PermissionsGuard } from '../../common/permissions.guard';
 import { CalculateShippingDto } from './dto/calculate-shipping.dto';
 import { CreateShipmentDto } from './dto/create-shipment.dto';
+import { CreateTrackingEventDto } from './dto/create-tracking-event.dto';
 import { ShippingService } from './shipping.service';
 
 @Controller('shipping')
@@ -13,17 +14,24 @@ export class ShippingController {
 
   @Post('calculate')
   calculate(@Body() body: CalculateShippingDto) {
-    return this.shippingService.calculate(body.subtotal, body.shippingMethod, body.province);
+    return this.shippingService.calculate(
+      body.subtotal,
+      body.shippingMethod,
+      body.province,
+      body.district,
+      body.weightGrams,
+      body.carrier,
+    );
   }
 
   @Post('create')
   @UseGuards(JwtGuard, PermissionsGuard)
   @Permissions('shipping.manage')
   create(@Body() body: CreateShipmentDto) {
-    return this.shippingService.createShipment(body.orderId);
+    return this.shippingService.createShipment(body.orderId, body.carrier, body.serviceCode);
   }
 
-  @Get('zones/list')
+  @Get(['zones', 'zones/list'])
   zones() {
     return this.shippingService.zones();
   }
@@ -38,5 +46,12 @@ export class ShippingController {
   @Permissions('shipping.manage')
   label(@Param('id') id: string) {
     return this.shippingService.label(id);
+  }
+
+  @Post(':id/events')
+  @UseGuards(JwtGuard, PermissionsGuard)
+  @Permissions('shipping.manage')
+  addTrackingEvent(@Param('id') id: string, @Body() body: CreateTrackingEventDto) {
+    return this.shippingService.addTrackingEvent(id, body);
   }
 }

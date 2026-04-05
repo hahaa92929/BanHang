@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { createHmac } from 'node:crypto';
-import test from 'node:test';
+import { test } from 'node:test';
 import { BadRequestException, NotFoundException, UnauthorizedException } from '@nestjs/common';
 import { PaymentsService } from './payments.service';
 
@@ -45,6 +45,7 @@ function buildMockPrisma(initialPaymentStatus: PaymentRecord['status'] = 'author
       'ord-1',
       {
         id: 'ord-1',
+        orderNumber: 'ORD-1',
         total: 150_000,
         currency: 'VND',
         paymentMethod: 'vnpay' as const,
@@ -55,6 +56,7 @@ function buildMockPrisma(initialPaymentStatus: PaymentRecord['status'] = 'author
       'ord-2',
       {
         id: 'ord-2',
+        orderNumber: 'ORD-2',
         total: 90_000,
         currency: 'VND',
         paymentMethod: 'cod' as const,
@@ -218,6 +220,58 @@ test('payments.listMethods initiate and getStatus support checkout orchestration
   assert.equal(initiated.status, 'pending');
   assert.equal(status.id, 'pay-1');
   assert.equal(status.order.id, 'ord-1');
+  assert.equal(methods.data.find((item) => item.method === 'vnpay')?.status, 'disabled');
+});
+
+test('payments.initiate builds signed VNPay checkout urls when gateway config exists', async () => {
+  const previous = {
+    VNPAY_TMN_CODE: process.env.VNPAY_TMN_CODE,
+    VNPAY_HASH_SECRET: process.env.VNPAY_HASH_SECRET,
+    VNPAY_PAYMENT_URL: process.env.VNPAY_PAYMENT_URL,
+    VNPAY_RETURN_URL: process.env.VNPAY_RETURN_URL,
+  };
+  process.env.VNPAY_TMN_CODE = 'BANHANG01';
+  process.env.VNPAY_HASH_SECRET = 'vnpay-secret-demo';
+  process.env.VNPAY_PAYMENT_URL = 'https://sandbox.vnpayment.vn/paymentv2/vpcpay.html';
+  process.env.VNPAY_RETURN_URL = 'https://app.example.com/payment/vnpay-return';
+
+  try {
+    const { prisma } = buildMockPrisma('authorized');
+    const service = new PaymentsService(prisma as never);
+    const initiated = await service.initiate({
+      orderId: 'ord-1',
+      method: 'vnpay',
+      ipAddress: '10.0.0.1',
+      returnUrl: 'https://shop.example.com/checkout/result',
+      locale: 'vn',
+    });
+
+    const redirectUrl = new URL(initiated.redirectUrl!);
+    const secureHash = redirectUrl.searchParams.get('vnp_SecureHash');
+    const baseParams = new URLSearchParams(redirectUrl.search);
+    baseParams.delete('vnp_SecureHash');
+    const signatureBase = new URLSearchParams(
+      [...baseParams.entries()].sort(([leftKey], [rightKey]) => leftKey.localeCompare(rightKey)),
+    ).toString();
+    const expectedHash = createHmac('sha512', process.env.VNPAY_HASH_SECRET!)
+      .update(signatureBase)
+      .digest('hex');
+
+    assert.equal(redirectUrl.origin, 'https://sandbox.vnpayment.vn');
+    assert.equal(redirectUrl.searchParams.get('vnp_TmnCode'), 'BANHANG01');
+    assert.equal(redirectUrl.searchParams.get('vnp_ReturnUrl'), 'https://shop.example.com/checkout/result');
+    assert.equal(redirectUrl.searchParams.get('vnp_IpAddr'), '10.0.0.1');
+    assert.equal(redirectUrl.searchParams.get('vnp_OrderInfo'), 'Thanh toan don ORD-1');
+    assert.equal(secureHash, expectedHash);
+  } finally {
+    for (const [key, value] of Object.entries(previous)) {
+      if (value === undefined) {
+        delete process.env[key];
+      } else {
+        process.env[key] = value;
+      }
+    }
+  }
 });
 
 test('payments.reject invalid refunds signatures and unsupported webhook events', async () => {

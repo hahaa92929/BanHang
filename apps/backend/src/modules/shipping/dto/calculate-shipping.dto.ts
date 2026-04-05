@@ -15,4 +15,13 @@ export class CalculateShippingDto {
   @IsOptional()
   @IsString()
   district?: string;
+
+  @IsOptional()
+  @IsIn(['ghn', 'ghtk', 'jt', 'viettel_post', 'grab_express'])
+  carrier?: 'ghn' | 'ghtk' | 'jt' | 'viettel_post' | 'grab_express';
+
+  @IsOptional()
+  @IsInt()
+  @Min(100)
+  weightGrams?: number;
 }

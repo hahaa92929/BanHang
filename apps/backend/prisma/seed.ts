@@ -10,18 +10,23 @@ async function main() {
   await prisma.orderStatusEvent.deleteMany();
   await prisma.orderItem.deleteMany();
   await prisma.order.deleteMany();
+  await prisma.inventoryLevel.deleteMany();
   await prisma.inventoryMovement.deleteMany();
   await prisma.inventoryReservationItem.deleteMany();
   await prisma.inventoryReservation.deleteMany();
   await prisma.cartCoupon.deleteMany();
+  await prisma.review.deleteMany();
   await prisma.wishlistItem.deleteMany();
   await prisma.cartItem.deleteMany();
   await prisma.notification.deleteMany();
   await prisma.passwordResetToken.deleteMany();
   await prisma.emailVerificationToken.deleteMany();
   await prisma.refreshSession.deleteMany();
+  await prisma.apiKey.deleteMany();
+  await prisma.socialAccount.deleteMany();
   await prisma.address.deleteMany();
   await prisma.productMedia.deleteMany();
+  await prisma.productVariant.deleteMany();
   await prisma.product.deleteMany();
   await prisma.coupon.deleteMany();
   await prisma.brand.deleteMany();
@@ -135,6 +140,25 @@ async function main() {
     }),
   ]);
 
+  const [hcmWarehouse, hnWarehouse] = await Promise.all([
+    prisma.warehouse.create({
+      data: {
+        code: 'HCM-01',
+        name: 'Ho Chi Minh Main Warehouse',
+        city: 'Ho Chi Minh',
+        isDefault: true,
+      },
+    }),
+    prisma.warehouse.create({
+      data: {
+        code: 'HN-01',
+        name: 'Ha Noi Warehouse',
+        city: 'Ha Noi',
+        isDefault: false,
+      },
+    }),
+  ]);
+
   const products = [
     {
       sku: 'IPH15-128-BLK',
@@ -148,6 +172,19 @@ async function main() {
       brandId: apple.id,
       isFeatured: true,
       totalSold: 128,
+      variants: [
+        {
+          sku: 'IPH15-128-BLK-A',
+          name: 'Black 128GB',
+          attributes: { color: 'Black', storage: '128GB' },
+          price: 19_990_000,
+          isDefault: true,
+          stocks: [
+            { warehouseId: hcmWarehouse.id, quantity: 15 },
+            { warehouseId: hnWarehouse.id, quantity: 8 },
+          ],
+        },
+      ],
     },
     {
       sku: 'SAMS24-256-GRY',
@@ -161,6 +198,19 @@ async function main() {
       brandId: samsung.id,
       isFeatured: true,
       totalSold: 84,
+      variants: [
+        {
+          sku: 'SAMS24-256-GRY-A',
+          name: 'Titanium Gray 256GB',
+          attributes: { color: 'Gray', storage: '256GB' },
+          price: 18_490_000,
+          isDefault: true,
+          stocks: [
+            { warehouseId: hcmWarehouse.id, quantity: 9 },
+            { warehouseId: hnWarehouse.id, quantity: 6 },
+          ],
+        },
+      ],
     },
     {
       sku: 'MBA-M3-13-256',
@@ -174,6 +224,19 @@ async function main() {
       brandId: apple.id,
       isFeatured: true,
       totalSold: 57,
+      variants: [
+        {
+          sku: 'MBA-M3-13-256-SLV',
+          name: 'Silver 256GB',
+          attributes: { color: 'Silver', storage: '256GB' },
+          price: 27_990_000,
+          isDefault: true,
+          stocks: [
+            { warehouseId: hcmWarehouse.id, quantity: 5 },
+            { warehouseId: hnWarehouse.id, quantity: 4 },
+          ],
+        },
+      ],
     },
     {
       sku: 'AIRPODS-PRO2',
@@ -186,6 +249,19 @@ async function main() {
       categoryId: audio.id,
       brandId: apple.id,
       totalSold: 143,
+      variants: [
+        {
+          sku: 'AIRPODS-PRO2-USB-C',
+          name: 'USB-C Charging Case',
+          attributes: { case: 'USB-C' },
+          price: 5_790_000,
+          isDefault: true,
+          stocks: [
+            { warehouseId: hcmWarehouse.id, quantity: 20 },
+            { warehouseId: hnWarehouse.id, quantity: 11 },
+          ],
+        },
+      ],
     },
     {
       sku: 'LOGI-MX3S',
@@ -198,6 +274,19 @@ async function main() {
       categoryId: accessories.id,
       brandId: logitech.id,
       totalSold: 91,
+      variants: [
+        {
+          sku: 'LOGI-MX3S-GRAPHITE',
+          name: 'Graphite',
+          attributes: { color: 'Graphite' },
+          price: 2_390_000,
+          isDefault: true,
+          stocks: [
+            { warehouseId: hcmWarehouse.id, quantity: 26 },
+            { warehouseId: hnWarehouse.id, quantity: 16 },
+          ],
+        },
+      ],
     },
     {
       sku: 'KEYCHRON-K2',
@@ -210,6 +299,19 @@ async function main() {
       categoryId: accessories.id,
       brandId: keychron.id,
       totalSold: 62,
+      variants: [
+        {
+          sku: 'KEYCHRON-K2-BROWN',
+          name: 'Brown Switch',
+          attributes: { switch: 'Brown' },
+          price: 2_890_000,
+          isDefault: true,
+          stocks: [
+            { warehouseId: hcmWarehouse.id, quantity: 9 },
+            { warehouseId: hnWarehouse.id, quantity: 8 },
+          ],
+        },
+      ],
     },
   ];
 
@@ -243,15 +345,40 @@ async function main() {
         isPrimary: true,
       },
     });
+
+    for (const variant of item.variants) {
+      const stock = variant.stocks.reduce((sum, entry) => sum + entry.quantity, 0);
+      const createdVariant = await prisma.productVariant.create({
+        data: {
+          productId: product.id,
+          sku: variant.sku,
+          name: variant.name,
+          attributes: variant.attributes,
+          price: variant.price,
+          stock,
+          isDefault: variant.isDefault,
+        },
+      });
+
+      await prisma.inventoryLevel.createMany({
+        data: variant.stocks.map((entry) => ({
+          productId: product.id,
+          variantId: createdVariant.id,
+          warehouseId: entry.warehouseId,
+          available: entry.quantity,
+          reserved: 0,
+        })),
+      });
+    }
   }
 
-  await prisma.warehouse.create({
-    data: {
-      code: 'HCM-01',
-      name: 'Ho Chi Minh Main Warehouse',
-      city: 'Ho Chi Minh',
-      isDefault: true,
+  const [iphone, macbook] = await prisma.product.findMany({
+    where: {
+      sku: {
+        in: ['IPH15-128-BLK', 'MBA-M3-13-256'],
+      },
     },
+    orderBy: { createdAt: 'asc' },
   });
 
   await prisma.address.create({
@@ -291,6 +418,48 @@ async function main() {
       },
     ],
   });
+
+  if (iphone && macbook) {
+    await prisma.wishlistItem.createMany({
+      data: [
+        {
+          userId: customer.id,
+          productId: iphone.id,
+        },
+        {
+          userId: customer.id,
+          productId: macbook.id,
+        },
+      ],
+    });
+
+    await prisma.review.createMany({
+      data: [
+        {
+          userId: customer.id,
+          productId: iphone.id,
+          rating: 5,
+          title: 'Rat dang tien',
+          content: 'May on dinh, camera dep, pin du dung ca ngay.',
+          mediaUrls: ['https://cdn.example.com/reviews/iphone-15-customer-1.jpg'],
+          isVerifiedPurchase: true,
+          status: 'published',
+        },
+        {
+          userId: admin.id,
+          productId: macbook.id,
+          rating: 4,
+          title: 'Hieu nang rat tot',
+          content: 'May nhe, pin on, phu hop di chuyen va cong viec hang ngay.',
+          mediaUrls: [],
+          isVerifiedPurchase: false,
+          status: 'published',
+          adminReply: 'Cam on ban da de lai danh gia.',
+          adminReplyAt: new Date(),
+        },
+      ],
+    });
+  }
 
   console.log(`Seed done. Admin id: ${admin.id}. Customer id: ${customer.id}`);
 }

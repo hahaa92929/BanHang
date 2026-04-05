@@ -21,6 +21,7 @@ export const ROLE_PERMISSIONS: Record<UserRole, Permission[]> = {
     'inventory.manage',
     'shipping.manage',
     'notifications.read',
+    'notifications.manage',
   ],
   manager: [
     'catalog.read',
@@ -32,6 +33,7 @@ export const ROLE_PERMISSIONS: Record<UserRole, Permission[]> = {
     'inventory.manage',
     'shipping.manage',
     'notifications.read',
+    'notifications.manage',
     'reporting.read',
   ],
   admin: [
@@ -46,6 +48,7 @@ export const ROLE_PERMISSIONS: Record<UserRole, Permission[]> = {
     'inventory.manage',
     'shipping.manage',
     'notifications.read',
+    'notifications.manage',
     'reporting.read',
   ],
   super_admin: [
@@ -60,6 +63,7 @@ export const ROLE_PERMISSIONS: Record<UserRole, Permission[]> = {
     'inventory.manage',
     'shipping.manage',
     'notifications.read',
+    'notifications.manage',
     'reporting.read',
   ],
 };

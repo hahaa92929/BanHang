@@ -14,4 +14,16 @@ export class InitiatePaymentDto {
     | 'stripe'
     | 'paypal'
     | 'bank_transfer';
+
+  @IsOptional()
+  @IsString()
+  returnUrl?: string;
+
+  @IsOptional()
+  @IsString()
+  ipAddress?: string;
+
+  @IsOptional()
+  @IsString()
+  locale?: string;
 }

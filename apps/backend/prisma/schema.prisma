@@ -16,6 +16,13 @@ enum UserRole {
   guest
 }
 
+enum AuthProvider {
+  google
+  facebook
+  apple
+  zalo
+}
+
 enum ProductStatus {
   draft
   active
@@ -58,6 +65,15 @@ enum ShippingMethod {
   pickup
 }
 
+enum ShippingCarrier {
+  internal
+  ghn
+  ghtk
+  jt
+  viettel_post
+  grab_express
+}
+
 enum ShippingStatus {
   pending
   packed
@@ -87,6 +103,19 @@ enum NotificationType {
   security
 }
 
+enum NotificationChannel {
+  in_app
+  email
+  sms
+  push
+}
+
+enum ReviewStatus {
+  pending
+  published
+  rejected
+}
+
 enum InventoryMovementType {
   reserve
   release
@@ -104,6 +133,8 @@ model User {
   phone                   String?
   role                    UserRole                 @default(customer)
   emailVerifiedAt         DateTime?
+  twoFactorSecret         String?
+  twoFactorEnabledAt      DateTime?
   failedLoginAttempts     Int                      @default(0)
   lockedUntil             DateTime?
   lastLoginAt             DateTime?
@@ -119,6 +150,11 @@ model User {
   addresses               Address[]
   wishlistItems           WishlistItem[]
   notifications           Notification[]
+  notificationPreference  NotificationPreference?
+  reviews                 Review[]
+  reviewHelpfulVotes      ReviewHelpfulVote[]
+  socialAccounts          SocialAccount[]
+  apiKeys                 ApiKey[]
   inventoryMovements      InventoryMovement[]      @relation("InventoryMovementActor")
   statusHistories         OrderStatusEvent[]       @relation("OrderStatusEventActor")
 }
@@ -183,7 +219,10 @@ model Product {
   orderItems       OrderItem[]
   reservationItems InventoryReservationItem[]
   media            ProductMedia[]
+  variants         ProductVariant[]
+  inventoryLevels  InventoryLevel[]
   wishlistItems    WishlistItem[]
+  reviews          Review[]
   inventoryMoves   InventoryMovement[]
 
   @@index([categoryId, status])
@@ -191,6 +230,47 @@ model Product {
   @@index([price])
   @@index([createdAt])
   @@index([status, isFeatured])
+}
+
+model ProductVariant {
+  id              String            @id @default(cuid())
+  productId       String
+  sku             String            @unique
+  name            String
+  attributes      Json?
+  price           Int
+  stock           Int               @default(0)
+  isDefault       Boolean           @default(false)
+  isActive        Boolean           @default(true)
+  createdAt       DateTime          @default(now())
+  updatedAt       DateTime          @updatedAt
+  product         Product           @relation(fields: [productId], references: [id], onDelete: Cascade)
+  cartItems       CartItem[]
+  orderItems      OrderItem[]
+  reservationItems InventoryReservationItem[]
+  inventoryLevels InventoryLevel[]
+  inventoryMoves  InventoryMovement[]
+
+  @@index([productId, isDefault])
+  @@index([productId, isActive])
+}
+
+model InventoryLevel {
+  id          String         @id @default(cuid())
+  productId   String
+  variantId   String
+  warehouseId String
+  available   Int
+  reserved    Int            @default(0)
+  createdAt   DateTime       @default(now())
+  updatedAt   DateTime       @updatedAt
+  product     Product        @relation(fields: [productId], references: [id], onDelete: Cascade)
+  variant     ProductVariant @relation(fields: [variantId], references: [id], onDelete: Cascade)
+  warehouse   Warehouse      @relation(fields: [warehouseId], references: [id], onDelete: Cascade)
+
+  @@unique([variantId, warehouseId])
+  @@index([productId, warehouseId])
+  @@index([warehouseId, available])
 }
 
 model ProductMedia {
@@ -230,14 +310,17 @@ model CartItem {
   id        String   @id @default(cuid())
   userId    String
   productId String
+  variantId String
   quantity  Int
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
   user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
   product   Product  @relation(fields: [productId], references: [id], onDelete: Restrict)
+  variant   ProductVariant @relation(fields: [variantId], references: [id], onDelete: Restrict)
 
-  @@unique([userId, productId])
+  @@unique([userId, productId, variantId])
   @@index([userId])
+  @@index([variantId])
 }
 
 model WishlistItem {
@@ -250,6 +333,43 @@ model WishlistItem {
 
   @@unique([userId, productId])
   @@index([userId])
+}
+
+model Review {
+  id                 String       @id @default(cuid())
+  userId             String
+  productId          String
+  rating             Int
+  title              String?
+  content            String
+  mediaUrls          String[]
+  isVerifiedPurchase Boolean      @default(false)
+  status             ReviewStatus @default(published)
+  helpfulCount       Int          @default(0)
+  adminReply         String?
+  adminReplyAt       DateTime?
+  createdAt          DateTime     @default(now())
+  updatedAt          DateTime     @updatedAt
+  user               User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  product            Product      @relation(fields: [productId], references: [id], onDelete: Cascade)
+  helpfulVotes       ReviewHelpfulVote[]
+
+  @@unique([userId, productId])
+  @@index([productId, status, createdAt])
+  @@index([userId, createdAt])
+}
+
+model ReviewHelpfulVote {
+  id        String   @id @default(cuid())
+  userId    String
+  reviewId  String
+  createdAt DateTime @default(now())
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  review    Review   @relation(fields: [reviewId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, reviewId])
+  @@index([reviewId, createdAt])
+  @@index([userId, createdAt])
 }
 
 model Coupon {
@@ -301,6 +421,9 @@ model Order {
   shippingFee    Int
   total          Int
   currency       String                @default("VND")
+  shippingCarrier ShippingCarrier?
+  shippingServiceCode String?
+  shippingLabelUrl String?
   trackingCode   String?
   confirmedAt    DateTime?
   shippedAt      DateTime?
@@ -315,12 +438,14 @@ model Order {
   coupon         Coupon?               @relation(fields: [couponId], references: [id], onDelete: SetNull)
   items          OrderItem[]
   history        OrderStatusEvent[]
+  trackingEvents ShippingTrackingEvent[]
   paymentEvents  PaymentWebhookEvent[]
   payments       Payment[]
 
   @@index([userId, createdAt])
   @@index([status, createdAt])
   @@index([trackingCode])
+  @@index([shippingCarrier, shippingStatus])
 }
 
 model InventoryReservation {
@@ -346,20 +471,37 @@ model InventoryReservationItem {
   id            String               @id @default(cuid())
   reservationId String
   productId     String
+  variantId     String
   name          String
   unitPrice     Int
   quantity      Int
   reservation   InventoryReservation @relation(fields: [reservationId], references: [id], onDelete: Cascade)
   product       Product              @relation(fields: [productId], references: [id], onDelete: Restrict)
+  variant       ProductVariant       @relation(fields: [variantId], references: [id], onDelete: Restrict)
+  allocations   InventoryReservationAllocation[]
 
   @@index([reservationId])
   @@index([productId])
+  @@index([variantId])
+}
+
+model InventoryReservationAllocation {
+  id                String                   @id @default(cuid())
+  reservationItemId String
+  warehouseId       String
+  quantity          Int
+  reservationItem   InventoryReservationItem @relation(fields: [reservationItemId], references: [id], onDelete: Cascade)
+  warehouse         Warehouse                @relation(fields: [warehouseId], references: [id], onDelete: Restrict)
+
+  @@index([reservationItemId])
+  @@index([warehouseId])
 }
 
 model OrderItem {
   id         String  @id @default(cuid())
   orderId    String
   productId  String
+  variantId  String?
   sku        String
   name       String
   unitPrice  Int
@@ -367,8 +509,10 @@ model OrderItem {
   totalPrice Int
   order      Order   @relation(fields: [orderId], references: [id], onDelete: Cascade)
   product    Product @relation(fields: [productId], references: [id], onDelete: Restrict)
+  variant    ProductVariant? @relation(fields: [variantId], references: [id], onDelete: SetNull)
 
   @@index([orderId])
+  @@index([variantId])
 }
 
 model OrderStatusEvent {
@@ -424,6 +568,38 @@ model EmailVerificationToken {
   @@index([userId, expiresAt])
 }
 
+model SocialAccount {
+  id             String       @id @default(cuid())
+  userId         String
+  provider       AuthProvider
+  providerUserId String
+  email          String?
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+  user           User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerUserId])
+  @@index([userId, provider])
+}
+
+model ApiKey {
+  id         String   @id @default(cuid())
+  userId     String
+  name       String
+  keyPrefix  String
+  keyHash    String   @unique
+  permissions String[]
+  lastUsedAt DateTime?
+  expiresAt  DateTime?
+  revokedAt  DateTime?
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, revokedAt])
+  @@index([keyPrefix])
+}
+
 model Payment {
   id             String                @id @default(cuid())
   orderId        String
@@ -461,18 +637,81 @@ model PaymentWebhookEvent {
 }
 
 model Notification {
-  id        String           @id @default(cuid())
-  userId    String
-  type      NotificationType
-  title     String
-  content   String
-  data      Json?
-  isRead    Boolean          @default(false)
-  readAt    DateTime?
-  createdAt DateTime         @default(now())
-  user      User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  id          String              @id @default(cuid())
+  userId      String
+  type        NotificationType
+  channel     NotificationChannel @default(in_app)
+  templateKey String?
+  campaignKey String?
+  title       String
+  content     String
+  data        Json?
+  isRead      Boolean             @default(false)
+  scheduledFor DateTime?
+  deliveredAt DateTime?
+  openedAt    DateTime?
+  clickedAt   DateTime?
+  readAt      DateTime?
+  createdAt   DateTime            @default(now())
+  user        User                @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([userId, isRead, createdAt])
+  @@index([userId, channel, createdAt])
+  @@index([templateKey])
+  @@index([campaignKey])
+  @@index([scheduledFor, deliveredAt])
+}
+
+model NotificationPreference {
+  id               String   @id @default(cuid())
+  userId           String   @unique
+  orderInApp       Boolean  @default(true)
+  orderEmail       Boolean  @default(true)
+  promotionInApp   Boolean  @default(true)
+  promotionEmail   Boolean  @default(false)
+  securityInApp    Boolean  @default(true)
+  securityEmail    Boolean  @default(true)
+  systemInApp      Boolean  @default(true)
+  systemEmail      Boolean  @default(false)
+  pushEnabled      Boolean  @default(false)
+  smsEnabled       Boolean  @default(false)
+  marketingOptIn   Boolean  @default(false)
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+  user             User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model NotificationTemplate {
+  id              String              @id @default(cuid())
+  key             String
+  channel         NotificationChannel
+  subjectTemplate String?
+  titleTemplate   String
+  contentTemplate String
+  isActive        Boolean             @default(true)
+  createdAt       DateTime            @default(now())
+  updatedAt       DateTime            @updatedAt
+
+  @@unique([key, channel])
+  @@index([channel, isActive])
+}
+
+model ShippingTrackingEvent {
+  id          String           @id @default(cuid())
+  orderId      String
+  status       ShippingStatus
+  carrier      ShippingCarrier?
+  code         String
+  title        String
+  description  String?
+  location     String?
+  occurredAt   DateTime
+  source       String          @default("system")
+  createdAt    DateTime        @default(now())
+  order        Order           @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  @@index([orderId, occurredAt])
+  @@index([carrier, occurredAt])
 }
 
 model Warehouse {
@@ -483,6 +722,8 @@ model Warehouse {
   isDefault Boolean             @default(false)
   createdAt DateTime            @default(now())
   updatedAt DateTime            @updatedAt
+  inventoryLevels InventoryLevel[]
+  reservationAllocations InventoryReservationAllocation[]
   movements InventoryMovement[]
 
   @@index([isDefault])
@@ -491,6 +732,7 @@ model Warehouse {
 model InventoryMovement {
   id          String                @id @default(cuid())
   productId   String
+  variantId   String?
   warehouseId String?
   actorId     String?
   type        InventoryMovementType
@@ -498,10 +740,12 @@ model InventoryMovement {
   note        String?
   createdAt   DateTime              @default(now())
   product     Product               @relation(fields: [productId], references: [id], onDelete: Cascade)
+  variant     ProductVariant?       @relation(fields: [variantId], references: [id], onDelete: SetNull)
   warehouse   Warehouse?            @relation(fields: [warehouseId], references: [id], onDelete: SetNull)
   actor       User?                 @relation("InventoryMovementActor", fields: [actorId], references: [id], onDelete: SetNull)
 
   @@index([productId, createdAt])
+  @@index([variantId, createdAt])
   @@index([warehouseId, createdAt])
   @@index([actorId, createdAt])
 }

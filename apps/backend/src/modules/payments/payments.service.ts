@@ -18,6 +18,14 @@ import { RefundPaymentDto } from './dto/refund-payment.dto';
 @Injectable()
 export class PaymentsService {
   private readonly webhookSecret: string;
+  private readonly vnpayConfig:
+    | {
+        tmnCode: string;
+        hashSecret: string;
+        paymentUrl: string;
+        returnUrl: string;
+      }
+    | undefined;
 
   constructor(
     private readonly prisma: PrismaService,
@@ -27,13 +35,28 @@ export class PaymentsService {
       this.config?.get('PAYMENT_WEBHOOK_SECRET', { infer: true }) ??
       process.env.PAYMENT_WEBHOOK_SECRET ??
       'test-payment-webhook-secret-12345678901234567890';
+    const tmnCode = this.config?.get('VNPAY_TMN_CODE', { infer: true }) ?? process.env.VNPAY_TMN_CODE;
+    const hashSecret =
+      this.config?.get('VNPAY_HASH_SECRET', { infer: true }) ?? process.env.VNPAY_HASH_SECRET;
+    const paymentUrl =
+      this.config?.get('VNPAY_PAYMENT_URL', { infer: true }) ?? process.env.VNPAY_PAYMENT_URL;
+    const returnUrl =
+      this.config?.get('VNPAY_RETURN_URL', { infer: true }) ?? process.env.VNPAY_RETURN_URL;
+    this.vnpayConfig =
+      tmnCode && hashSecret && paymentUrl && returnUrl
+        ? { tmnCode, hashSecret, paymentUrl, returnUrl }
+        : undefined;
   }
 
   listMethods() {
     return {
       data: [
         { method: 'cod', gateway: 'offline', status: 'enabled' },
-        { method: 'vnpay', gateway: 'vnpay', status: 'enabled' },
+        {
+          method: 'vnpay',
+          gateway: 'vnpay',
+          status: this.vnpayConfig ? 'enabled' : 'disabled',
+        },
         { method: 'momo', gateway: 'momo', status: 'enabled' },
         { method: 'zalopay', gateway: 'zalopay', status: 'enabled' },
         { method: 'stripe', gateway: 'stripe', status: 'enabled' },
@@ -58,6 +81,9 @@ export class PaymentsService {
     }
 
     const method = payload.method ?? order.paymentMethod;
+    if (method === 'vnpay' && !this.vnpayConfig) {
+      throw new BadRequestException('VNPay is not configured');
+    }
     const gateway = this.resolveGateway(method);
     const transactionId = generateId('txn').toUpperCase();
     const paymentStatus: PaymentStatus = method === 'cod' ? 'pending' : 'authorized';
@@ -105,10 +131,7 @@ export class PaymentsService {
       method,
       status: payment.status,
       transactionId: payment.transactionId,
-      redirectUrl:
-        method === 'cod'
-          ? null
-          : `https://payments.local/${gateway}/checkout?paymentId=${payment.id}`,
+      redirectUrl: this.buildRedirectUrl(payment, order, payload),
     };
   }
 
@@ -309,5 +332,92 @@ export class PaymentsService {
 
   private resolveGateway(method: PaymentMethod) {
     return method === 'cod' ? 'offline' : method;
+  }
+
+  private buildRedirectUrl(
+    payment: {
+      id: string;
+      gateway: string;
+      amount: number;
+      transactionId: string | null;
+      orderId: string;
+      currency: string;
+    },
+    order: {
+      orderNumber: string;
+    },
+    payload: Pick<InitiatePaymentDto, 'method' | 'returnUrl' | 'ipAddress' | 'locale'>,
+  ) {
+    if (payment.gateway === 'offline') {
+      return null;
+    }
+
+    if (payment.gateway === 'vnpay') {
+      if (!this.vnpayConfig) {
+        throw new BadRequestException('VNPay is not configured');
+      }
+
+      return this.buildVnpayRedirectUrl(payment, order, payload);
+    }
+
+    return `https://payments.local/${payment.gateway}/checkout?paymentId=${payment.id}`;
+  }
+
+  private buildVnpayRedirectUrl(
+    payment: {
+      id: string;
+      amount: number;
+      transactionId: string | null;
+      orderId: string;
+      currency: string;
+    },
+    order: {
+      orderNumber: string;
+    },
+    payload: Pick<InitiatePaymentDto, 'returnUrl' | 'ipAddress' | 'locale'>,
+  ) {
+    const txnRef = payment.transactionId ?? payment.id;
+    const params = new URLSearchParams({
+      vnp_Version: '2.1.0',
+      vnp_Command: 'pay',
+      vnp_TmnCode: this.vnpayConfig!.tmnCode,
+      vnp_Amount: `${payment.amount * 100}`,
+      vnp_CreateDate: this.formatVnpayDate(new Date()),
+      vnp_CurrCode: payment.currency,
+      vnp_IpAddr: payload.ipAddress?.trim() || '127.0.0.1',
+      vnp_Locale: payload.locale?.trim() || 'vn',
+      vnp_OrderInfo: `Thanh toan don ${order.orderNumber}`,
+      vnp_OrderType: 'other',
+      vnp_ReturnUrl: payload.returnUrl?.trim() || this.vnpayConfig!.returnUrl,
+      vnp_TxnRef: txnRef,
+    });
+
+    const sortedParams = this.sortQueryParams(params);
+    const signature = createHmac('sha512', this.vnpayConfig!.hashSecret)
+      .update(sortedParams.toString())
+      .digest('hex');
+    sortedParams.set('vnp_SecureHash', signature);
+
+    return `${this.vnpayConfig!.paymentUrl}?${sortedParams.toString()}`;
+  }
+
+  private sortQueryParams(input: URLSearchParams) {
+    const sorted = new URLSearchParams();
+    const pairs = [...input.entries()].sort(([leftKey], [rightKey]) => leftKey.localeCompare(rightKey));
+    for (const [key, value] of pairs) {
+      sorted.append(key, value);
+    }
+
+    return sorted;
+  }
+
+  private formatVnpayDate(date: Date) {
+    const yyyy = date.getFullYear().toString();
+    const mm = `${date.getMonth() + 1}`.padStart(2, '0');
+    const dd = `${date.getDate()}`.padStart(2, '0');
+    const hh = `${date.getHours()}`.padStart(2, '0');
+    const mi = `${date.getMinutes()}`.padStart(2, '0');
+    const ss = `${date.getSeconds()}`.padStart(2, '0');
+    return `${yyyy}${mm}${dd}${hh}${mi}${ss}`;
   }
 }

@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import test from 'node:test';
+import { test } from 'node:test';
 import { BadRequestException, NotFoundException } from '@nestjs/common';
 import { OrdersService } from './orders.service';
 
@@ -14,7 +14,20 @@ type ProductRecord = {
   status: 'active' | 'draft' | 'archived';
 };
 
-type CartRecord = { id: string; userId: string; productId: string; quantity: number; createdAt: Date };
+type ProductVariantRecord = {
+  id: string;
+  productId: string;
+  sku: string;
+  name: string;
+  price: number;
+  stock: number;
+  isDefault: boolean;
+  isActive: boolean;
+  attributes: Record<string, unknown> | null;
+  createdAt: Date;
+};
+
+type CartRecord = { id: string; userId: string; productId: string; variantId: string; quantity: number; createdAt: Date };
 type ReservationRecord = {
   id: string;
   userId: string;
@@ -30,9 +43,32 @@ type ReservationItemRecord = {
   id: string;
   reservationId: string;
   productId: string;
+  variantId: string;
   name: string;
   unitPrice: number;
   quantity: number;
+};
+type ReservationAllocationRecord = {
+  id: string;
+  reservationItemId: string;
+  warehouseId: string;
+  quantity: number;
+};
+type WarehouseRecord = {
+  id: string;
+  code: string;
+  name: string;
+  isDefault: boolean;
+};
+type InventoryLevelRecord = {
+  id: string;
+  productId: string;
+  variantId: string;
+  warehouseId: string;
+  available: number;
+  reserved: number;
+  createdAt: Date;
+  updatedAt: Date;
 };
 type OrderRecord = {
   id: string;
@@ -67,6 +103,7 @@ type OrderItemRecord = {
   id: string;
   orderId: string;
   productId: string;
+  variantId: string | null;
   sku: string;
   name: string;
   unitPrice: number;
@@ -114,9 +151,48 @@ function createOrdersMock() {
         },
       ],
     ]),
+    variants: new Map<string, ProductVariantRecord>([
+      [
+        'pv-1',
+        {
+          id: 'pv-1',
+          productId: 'p-1',
+          sku: 'SKU-1-BLACK',
+          name: 'Black 128GB',
+          price: 20_000_000,
+          stock: 10,
+          isDefault: true,
+          isActive: true,
+          attributes: { color: 'Black' },
+          createdAt: new Date('2026-01-01T00:00:00.000Z'),
+        },
+      ],
+    ]),
+    warehouses: new Map<string, WarehouseRecord>([
+      [
+        'w-main',
+        {
+          id: 'w-main',
+          code: 'MAIN',
+          name: 'Main Warehouse',
+          isDefault: true,
+        },
+      ],
+      [
+        'w-hn',
+        {
+          id: 'w-hn',
+          code: 'HN',
+          name: 'Ha Noi Warehouse',
+          isDefault: false,
+        },
+      ],
+    ]),
+    inventoryLevels: [] as InventoryLevelRecord[],
     cartItems: [] as CartRecord[],
     reservations: new Map<string, ReservationRecord>(),
     reservationItems: [] as ReservationItemRecord[],
+    reservationAllocations: [] as ReservationAllocationRecord[],
     orders: new Map<string, OrderRecord>(),
     orderItems: [] as OrderItemRecord[],
     orderEvents: [] as OrderEventRecord[],
@@ -126,11 +202,35 @@ function createOrdersMock() {
     seq: 1,
   };
 
-  function addCart(userId: string, productId: string, quantity: number) {
+  state.inventoryLevels.push(
+    {
+      id: 'il-1',
+      productId: 'p-1',
+      variantId: 'pv-1',
+      warehouseId: 'w-main',
+      available: 6,
+      reserved: 0,
+      createdAt: new Date('2026-01-01T00:00:00.000Z'),
+      updatedAt: new Date('2026-01-01T00:00:00.000Z'),
+    },
+    {
+      id: 'il-2',
+      productId: 'p-1',
+      variantId: 'pv-1',
+      warehouseId: 'w-hn',
+      available: 4,
+      reserved: 0,
+      createdAt: new Date('2026-01-02T00:00:00.000Z'),
+      updatedAt: new Date('2026-01-02T00:00:00.000Z'),
+    },
+  );
+
+  function addCart(userId: string, productId: string, quantity: number, variantId = 'pv-1') {
     state.cartItems.push({
       id: `ci-${state.seq++}`,
       userId,
       productId,
+      variantId,
       quantity,
       createdAt: new Date(),
     });
@@ -141,7 +241,17 @@ function createOrdersMock() {
       ...reservation,
       items: state.reservationItems
         .filter((item) => item.reservationId === reservation.id)
-        .map((item) => ({ ...item, product: state.products.get(item.productId)! })),
+        .map((item) => ({
+          ...item,
+          product: state.products.get(item.productId)!,
+          variant: state.variants.get(item.variantId)!,
+          allocations: state.reservationAllocations
+            .filter((allocation) => allocation.reservationItemId === item.id)
+            .map((allocation) => ({
+              ...allocation,
+              warehouse: state.warehouses.get(allocation.warehouseId)!,
+            })),
+        })),
     };
   }
 
@@ -149,7 +259,15 @@ function createOrdersMock() {
     if (!include) return { ...order };
     return {
       ...order,
-      items: include.items ? state.orderItems.filter((item) => item.orderId === order.id) : undefined,
+      items: include.items
+        ? state.orderItems
+            .filter((item) => item.orderId === order.id)
+            .map((item) => ({
+              ...item,
+              product: state.products.get(item.productId)!,
+              variant: item.variantId ? state.variants.get(item.variantId) ?? null : null,
+            }))
+        : undefined,
       history: include.history
         ? state.orderEvents
             .filter((event) => event.orderId === order.id)
@@ -172,7 +290,7 @@ function createOrdersMock() {
         if (args.where.expiresAt?.lt) rows = rows.filter((row) => row.expiresAt < args.where.expiresAt.lt!);
         return args.select?.id ? rows.map((row) => ({ id: row.id })) : rows;
       },
-      findFirst: async (args: { where: { userId: string; status: string; expiresAt: { gt: Date } }; include?: { items: { include: { product: true } } } }) => {
+      findFirst: async (args: { where: { userId: string; status: string; expiresAt: { gt: Date } }; include?: Record<string, unknown> }) => {
         const found = [...state.reservations.values()].find(
           (row) =>
             row.userId === args.where.userId &&
@@ -182,7 +300,7 @@ function createOrdersMock() {
         if (!found) return null;
         return args.include ? materializeReservation(found) : found;
       },
-      findUnique: async (args: { where: { id: string }; include?: { items: { include?: { product: true } } | true } }) => {
+      findUnique: async (args: { where: { id: string }; include?: Record<string, unknown> }) => {
         const found = state.reservations.get(args.where.id);
         if (!found) return null;
         return args.include ? materializeReservation(found) : found;
@@ -217,7 +335,15 @@ function createOrdersMock() {
       },
     },
     inventoryReservationItem: {
-      createMany: async (args: { data: ReservationItemRecord[] }) => {
+      create: async (args: { data: Omit<ReservationItemRecord, 'id'> }) => {
+        const item: ReservationItemRecord = {
+          id: `ri-${state.seq++}`,
+          ...args.data,
+        };
+        state.reservationItems.push(item);
+        return item;
+      },
+      createMany: async (args: { data: Array<Omit<ReservationItemRecord, 'id'>> }) => {
         for (const item of args.data) {
           state.reservationItems.push({
             id: `ri-${state.seq++}`,
@@ -227,15 +353,91 @@ function createOrdersMock() {
         return { count: args.data.length };
       },
     },
+    inventoryReservationAllocation: {
+      createMany: async (args: { data: Array<Omit<ReservationAllocationRecord, 'id'>> }) => {
+        for (const item of args.data) {
+          state.reservationAllocations.push({
+            id: `ra-${state.seq++}`,
+            ...item,
+          });
+        }
+        return { count: args.data.length };
+      },
+    },
+    inventoryLevel: {
+      findMany: async (args: {
+        where: { productId: string; variantId: string; available: { gt: number } };
+        include?: { warehouse?: true };
+      }) =>
+        state.inventoryLevels
+          .filter(
+            (level) =>
+              level.productId === args.where.productId &&
+              level.variantId === args.where.variantId &&
+              level.available > args.where.available.gt,
+          )
+          .map((level) => ({
+            ...level,
+            warehouse: args.include?.warehouse ? state.warehouses.get(level.warehouseId)! : undefined,
+          })),
+      update: async (args: {
+        where: { variantId_warehouseId: { variantId: string; warehouseId: string } };
+        data: { available?: { decrement?: number; increment?: number }; reserved?: { decrement?: number; increment?: number } };
+      }) => {
+        const level = state.inventoryLevels.find(
+          (item) =>
+            item.variantId === args.where.variantId_warehouseId.variantId &&
+            item.warehouseId === args.where.variantId_warehouseId.warehouseId,
+        );
+        if (!level) {
+          throw new Error('inventory level not found');
+        }
+
+        if (args.data.available?.decrement) {
+          level.available -= args.data.available.decrement;
+        }
+        if (args.data.available?.increment) {
+          level.available += args.data.available.increment;
+        }
+        if (args.data.reserved?.decrement) {
+          level.reserved -= args.data.reserved.decrement;
+        }
+        if (args.data.reserved?.increment) {
+          level.reserved += args.data.reserved.increment;
+        }
+        level.updatedAt = new Date();
+        return level;
+      },
+    },
     cartItem: {
-      findMany: async (args: { where: { userId: string } }) =>
+      findMany: async (args: { where: { userId: string }; include?: { product?: true; variant?: true } }) =>
         state.cartItems
           .filter((row) => row.userId === args.where.userId)
-          .map((row) => ({ ...row, product: state.products.get(row.productId)! })),
+          .map((row) => ({
+            ...row,
+            product: args.include?.product ? state.products.get(row.productId)! : undefined,
+            variant: args.include?.variant ? state.variants.get(row.variantId)! : undefined,
+          })),
       deleteMany: async (args: { where: { userId: string } }) => {
         const before = state.cartItems.length;
         state.cartItems = state.cartItems.filter((row) => row.userId !== args.where.userId);
         return { count: before - state.cartItems.length };
+      },
+    },
+    productVariant: {
+      updateMany: async (args: { where: { id: string; stock: { gte: number } }; data: { stock: { decrement: number } } }) => {
+        const variant = state.variants.get(args.where.id);
+        if (!variant || variant.stock < args.where.stock.gte) return { count: 0 };
+        variant.stock -= args.data.stock.decrement;
+        state.variants.set(variant.id, variant);
+        return { count: 1 };
+      },
+      update: async (args: { where: { id: string }; data: { stock: { increment: number } } }) => {
+        const variant = state.variants.get(args.where.id);
+        if (!variant) throw new Error('variant not found');
+        variant.stock += args.data.stock.increment;
+        state.variants.set(variant.id, variant);
+        return variant;
       },
     },
     product: {
@@ -295,7 +497,7 @@ function createOrdersMock() {
         [...state.orders.values()].map((order) => materializeOrder(order, args.include)),
     },
     orderItem: {
-      createMany: async (args: { data: OrderItemRecord[] }) => {
+      createMany: async (args: { data: Array<Omit<OrderItemRecord, 'id'>> }) => {
         for (const item of args.data) {
           state.orderItems.push({
             id: `oi-${state.seq++}`,
@@ -390,7 +592,12 @@ test('orders.createReservationFromCart reserves stock from cart', async () => {
   assert.equal(reservation.status, 'active');
   assert.equal(reservation.totalItems, 2);
   assert.equal(mock.state.products.get('p-1')?.stock, 8);
+  assert.equal(mock.state.variants.get('pv-1')?.stock, 8);
   assert.equal(mock.state.inventoryMovements.length, 1);
+  assert.equal(reservation.items[0].variantId, 'pv-1');
+  assert.equal(reservation.items[0].allocations[0].warehouseCode, 'MAIN');
+  assert.equal(mock.state.inventoryLevels[0].available, 4);
+  assert.equal(mock.state.inventoryLevels[0].reserved, 2);
 });
 
 test('orders.checkout creates order, payment and clears cart', async () => {
@@ -406,6 +613,8 @@ test('orders.checkout creates order, payment and clears cart', async () => {
   assert.equal(mock.state.cartItems.length, 0);
   assert.equal(mock.state.payments.length, 1);
   assert.equal(mock.state.notifications.length, 1);
+  assert.equal(mock.state.orderItems[0].variantId, 'pv-1');
+  assert.equal(mock.state.orderItems[0].sku, 'SKU-1-BLACK');
 });
 
 test('orders.cancelOrder restores stock and marks payment canceled', async () => {
@@ -419,7 +628,10 @@ test('orders.cancelOrder restores stock and marks payment canceled', async () =>
 
   assert.equal(canceled?.status, 'canceled');
   assert.equal(mock.state.products.get('p-1')?.stock, 10);
+  assert.equal(mock.state.variants.get('pv-1')?.stock, 10);
   assert.equal(mock.state.payments[0].status, 'canceled');
+  assert.equal(mock.state.inventoryLevels[0].available, 6);
+  assert.equal(mock.state.inventoryLevels[0].reserved, 0);
 });
 
 test('orders.updateStatus follows 4-step flow and marks COD paid at completion', async () => {
@@ -456,6 +668,7 @@ test('orders.reservation lifecycle APIs return summaries and release expired sto
   assert.equal(current.data?.id, reservation.id);
   assert.equal(canceled.success, true);
   assert.equal(mock.state.products.get('p-1')?.stock, 10);
+  assert.equal(mock.state.inventoryLevels[0].reserved, 0);
 
   mock.addCart('u-1', 'p-1', 1);
   const expiredReservation = await service.createReservationFromCart('u-1');
@@ -466,6 +679,7 @@ test('orders.reservation lifecycle APIs return summaries and release expired sto
   const release = await service.releaseExpiredReservations('u-admin');
   assert.equal(release.expiredCount, 1);
   assert.equal(mock.state.products.get('p-1')?.stock, 10);
+  assert.equal(mock.state.inventoryLevels[0].reserved, 0);
 });
 
 test('orders.list detail tracking invoice and return request cover customer lifecycle', async () => {
@@ -491,6 +705,7 @@ test('orders.list detail tracking invoice and return request cover customer life
   assert.ok(Array.isArray(tracking.timeline));
   assert.equal(invoice.orderNumber, order!.orderNumber);
   assert.equal(invoice.items.length, 1);
+  assert.equal(invoice.items[0].variantName, 'Black 128GB');
   assert.equal(returned?.status, 'returned');
 });
 

@@ -4,6 +4,7 @@ import { RequestWithUser } from '../../common/interfaces/request-with-user.inter
 import { JwtGuard } from '../../common/jwt.guard';
 import { PermissionsGuard } from '../../common/permissions.guard';
 import { AdjustInventoryDto } from './dto/adjust-inventory.dto';
+import { TransferInventoryDto } from './dto/transfer-inventory.dto';
 import { InventoryService } from './inventory.service';
 
 @Controller('inventory')
@@ -14,7 +15,29 @@ export class InventoryController {
   @UseGuards(JwtGuard, PermissionsGuard)
   @Permissions('inventory.manage')
   adjust(@Req() request: RequestWithUser, @Body() body: AdjustInventoryDto) {
-    return this.inventoryService.adjust(body.productId, body.quantity, request.user!.sub, body.note);
+    return this.inventoryService.adjust(
+      body.productId,
+      body.quantity,
+      request.user!.sub,
+      body.note,
+      body.variantId,
+      body.warehouseCode,
+    );
+  }
+
+  @Post('transfer')
+  @UseGuards(JwtGuard, PermissionsGuard)
+  @Permissions('inventory.manage')
+  transfer(@Req() request: RequestWithUser, @Body() body: TransferInventoryDto) {
+    return this.inventoryService.transfer(
+      body.productId,
+      body.quantity,
+      request.user!.sub,
+      body.fromWarehouseCode,
+      body.toWarehouseCode,
+      body.note,
+      body.variantId,
+    );
   }
 
   @Get('movements/list')

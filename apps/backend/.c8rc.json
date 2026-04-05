@@ -1,0 +1,8 @@
+{
+  "exclude": [
+    "src/**/*.controller.ts",
+    "src/modules/**/dto/**",
+    "src/common/decorators/**",
+    "src/common/interfaces/**"
+  ]
+}

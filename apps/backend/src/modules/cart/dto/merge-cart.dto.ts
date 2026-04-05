@@ -1,9 +1,13 @@
 import { Type } from 'class-transformer';
-import { ArrayMinSize, IsInt, IsString, Min, ValidateNested } from 'class-validator';
+import { ArrayMinSize, IsInt, IsOptional, IsString, Min, ValidateNested } from 'class-validator';
 
 class MergeCartItemDto {
   @IsString()
   productId!: string;
+
+  @IsOptional()
+  @IsString()
+  variantId?: string;
 
   @Type(() => Number)
   @IsInt()

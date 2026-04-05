@@ -16,6 +16,7 @@ tags:
   - name: Shipping
   - name: Notifications
   - name: Reporting
+  - name: Wishlist
 paths:
   /health:
     get:
@@ -25,10 +26,22 @@ paths:
         '200':
           description: Service is healthy
 
+  /auth/guest:
+    post:
+      tags: [Auth]
+      summary: Create a guest session for server-side cart and checkout
+      responses:
+        '200':
+          description: Guest auth payload
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthResponse'
+
   /auth/login:
     post:
       tags: [Auth]
-      summary: Login with email and password
+      summary: Login with email, password, and optional OTP
       requestBody:
         required: true
         content:
@@ -43,10 +56,35 @@ paths:
               schema:
                 $ref: '#/components/schemas/AuthResponse'
 
+  /auth/social/{provider}:
+    post:
+      tags: [Auth]
+      summary: Social login or account linking with optional guest cart merge
+      parameters:
+        - in: path
+          name: provider
+          required: true
+          schema:
+            type: string
+            enum: [google, facebook, apple, zalo]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SocialLoginRequest'
+      responses:
+        '200':
+          description: Auth payload
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthResponse'
+
   /auth/register:
     post:
       tags: [Auth]
-      summary: Register a customer account
+      summary: Register a customer account with optional guest cart merge
       requestBody:
         required: true
         content:
@@ -60,9 +98,15 @@ paths:
   /auth/refresh:
     post:
       tags: [Auth]
-      summary: Refresh access token
+      summary: Refresh access token using body token or refresh cookie
+      parameters:
+        - in: header
+          name: x-csrf-token
+          required: false
+          schema:
+            type: string
       requestBody:
-        required: true
+        required: false
         content:
           application/json:
             schema:
@@ -122,6 +166,89 @@ paths:
       responses:
         '200':
           description: Verification token requested
+
+  /auth/2fa/enable:
+    post:
+      tags: [Auth]
+      summary: Generate a TOTP secret and otpauth URL
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Two-factor setup payload
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TwoFactorSetupResponse'
+
+  /auth/2fa/verify:
+    post:
+      tags: [Auth]
+      summary: Verify TOTP code and activate two-factor authentication
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/VerifyTwoFactorRequest'
+      responses:
+        '200':
+          description: Two-factor verification result
+
+  /auth/api-keys:
+    get:
+      tags: [Auth]
+      summary: List API keys for the current user
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: API key list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/ApiKeySummary'
+    post:
+      tags: [Auth]
+      summary: Create an API key for integrations
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateApiKeyRequest'
+      responses:
+        '201':
+          description: API key created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiKeyCreateResponse'
+
+  /auth/api-keys/{id}:
+    delete:
+      tags: [Auth]
+      summary: Revoke an API key
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: API key revoked
 
   /auth/me:
     get:
@@ -382,6 +509,196 @@ paths:
         '201':
           description: Media created
 
+  /products/{productRef}/reviews:
+    get:
+      tags: [Catalog]
+      summary: List published reviews for a product
+      parameters:
+        - in: path
+          name: productRef
+          required: true
+          schema:
+            type: string
+        - in: query
+          name: rating
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 5
+        - in: query
+          name: sort
+          schema:
+            type: string
+            enum: [recent, helpful, rating_desc]
+        - in: query
+          name: verifiedOnly
+          schema:
+            type: boolean
+        - in: query
+          name: withMedia
+          schema:
+            type: boolean
+        - in: query
+          name: page
+          schema:
+            type: integer
+            minimum: 1
+        - in: query
+          name: limit
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 50
+      responses:
+        '200':
+          description: Review list
+    post:
+      tags: [Catalog]
+      summary: Create a product review
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: path
+          name: productRef
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateReviewRequest'
+      responses:
+        '201':
+          description: Review created
+
+  /products/{productRef}/reviews/moderation:
+    get:
+      tags: [Catalog]
+      summary: List reviews for moderation
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: path
+          name: productRef
+          required: true
+          schema:
+            type: string
+        - in: query
+          name: status
+          schema:
+            type: string
+            enum: [pending, published, rejected]
+        - in: query
+          name: rating
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 5
+        - in: query
+          name: sort
+          schema:
+            type: string
+            enum: [recent, helpful, rating_desc]
+        - in: query
+          name: verifiedOnly
+          schema:
+            type: boolean
+        - in: query
+          name: withMedia
+          schema:
+            type: boolean
+        - in: query
+          name: page
+          schema:
+            type: integer
+            minimum: 1
+        - in: query
+          name: limit
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 50
+      responses:
+        '200':
+          description: Moderation queue
+
+  /products/{productRef}/reviews/{reviewId}/helpful:
+    post:
+      tags: [Catalog]
+      summary: Mark a published review as helpful
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: path
+          name: productRef
+          required: true
+          schema:
+            type: string
+        - in: path
+          name: reviewId
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Helpful vote registered
+
+  /products/{productRef}/reviews/{reviewId}/reply:
+    patch:
+      tags: [Catalog]
+      summary: Reply to a product review as admin
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: path
+          name: productRef
+          required: true
+          schema:
+            type: string
+        - in: path
+          name: reviewId
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ReplyReviewRequest'
+      responses:
+        '200':
+          description: Review reply saved
+
+  /products/{productRef}/reviews/{reviewId}/status:
+    patch:
+      tags: [Catalog]
+      summary: Update review moderation status
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: path
+          name: productRef
+          required: true
+          schema:
+            type: string
+        - in: path
+          name: reviewId
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ModerateReviewRequest'
+      responses:
+        '200':
+          description: Review status updated
+
   /cart:
     get:
       tags: [Cart]
@@ -420,6 +737,11 @@ paths:
           required: true
           schema:
             type: string
+        - in: query
+          name: variantId
+          required: false
+          schema:
+            type: string
       requestBody:
         required: true
         content:
@@ -438,6 +760,11 @@ paths:
         - in: path
           name: productId
           required: true
+          schema:
+            type: string
+        - in: query
+          name: variantId
+          required: false
           schema:
             type: string
       responses:
@@ -496,6 +823,11 @@ paths:
           required: true
           schema:
             type: string
+        - in: query
+          name: variantId
+          required: false
+          schema:
+            type: string
       responses:
         '200':
           description: Updated cart
@@ -509,6 +841,48 @@ paths:
       responses:
         '200':
           description: Empty cart
+
+  /wishlist:
+    get:
+      tags: [Wishlist]
+      summary: List current user wishlist
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Wishlist data
+
+  /wishlist/items:
+    post:
+      tags: [Wishlist]
+      summary: Add a product to wishlist
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AddWishlistItemRequest'
+      responses:
+        '201':
+          description: Wishlist updated
+
+  /wishlist/items/{productId}:
+    delete:
+      tags: [Wishlist]
+      summary: Remove a product from wishlist
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: path
+          name: productId
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Wishlist updated
 
   /orders:
     get:
@@ -537,7 +911,7 @@ paths:
   /orders/checkout:
     post:
       tags: [Orders]
-      summary: Checkout reservation into order
+      summary: Checkout reservation into order for customer or guest session
       security:
         - bearerAuth: []
       requestBody:
@@ -801,6 +1175,22 @@ paths:
         '200':
           description: Inventory adjusted
 
+  /inventory/transfer:
+    post:
+      tags: [Inventory]
+      summary: Transfer available variant stock between warehouses
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TransferInventoryRequest'
+      responses:
+        '200':
+          description: Inventory transferred
+
   /inventory/movements/list:
     get:
       tags: [Inventory]
@@ -869,6 +1259,16 @@ paths:
         '200':
           description: Shipment created
 
+  /shipping/zones:
+    get:
+      tags: [Shipping]
+      summary: List delivery zones
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Zone list
+
   /shipping/zones/list:
     get:
       tags: [Shipping]
@@ -911,6 +1311,28 @@ paths:
         '200':
           description: Label generated
 
+  /shipping/{id}/events:
+    post:
+      tags: [Shipping]
+      summary: Append shipment tracking event
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateTrackingEventRequest'
+      responses:
+        '200':
+          description: Tracking updated
+
   /notifications:
     get:
       tags: [Notifications]
@@ -920,6 +1342,22 @@ paths:
       responses:
         '200':
           description: Notification list
+
+  /notifications/{id}/click:
+    patch:
+      tags: [Notifications]
+      summary: Track notification click
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Notification click tracked
 
   /notifications/{id}/read:
     patch:
@@ -947,15 +1385,222 @@ paths:
         '200':
           description: Notifications updated
 
+  /notifications/preferences/current:
+    get:
+      tags: [Notifications]
+      summary: Get current user notification preferences
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Notification preferences
+    patch:
+      tags: [Notifications]
+      summary: Update current user notification preferences
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateNotificationPreferencesRequest'
+      responses:
+        '200':
+          description: Notification preferences updated
+
+  /notifications/preferences/unsubscribe:
+    post:
+      tags: [Notifications]
+      summary: Unsubscribe current user from a notification scope
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UnsubscribeNotificationsRequest'
+      responses:
+        '200':
+          description: Notification preferences updated
+
+  /notifications/templates/list:
+    get:
+      tags: [Notifications]
+      summary: List notification templates
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: query
+          name: channel
+          required: false
+          schema:
+            type: string
+            enum: [in_app, email, sms, push]
+      responses:
+        '200':
+          description: Notification template list
+
+  /notifications/templates:
+    post:
+      tags: [Notifications]
+      summary: Create notification template
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateNotificationTemplateRequest'
+      responses:
+        '200':
+          description: Notification template created
+
+  /notifications/templates/{id}:
+    patch:
+      tags: [Notifications]
+      summary: Update notification template
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateNotificationTemplateRequest'
+      responses:
+        '200':
+          description: Notification template updated
+
+  /notifications/templates/{id}/preview:
+    post:
+      tags: [Notifications]
+      summary: Preview rendered notification template
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PreviewNotificationTemplateRequest'
+      responses:
+        '200':
+          description: Notification template preview
+
+  /notifications/batch:
+    post:
+      tags: [Notifications]
+      summary: Create notification batch or scheduled campaign
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateNotificationBatchRequest'
+      responses:
+        '200':
+          description: Notification batch created
+
+  /notifications/dispatch:
+    post:
+      tags: [Notifications]
+      summary: Dispatch due scheduled notifications
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DispatchScheduledNotificationsRequest'
+      responses:
+        '200':
+          description: Scheduled notifications dispatched
+
   /reporting/summary:
     get:
       tags: [Reporting]
       summary: Summary dashboard metrics
       security:
         - bearerAuth: []
+        - apiKeyAuth: []
       responses:
         '200':
           description: Reporting summary
+
+  /reporting/revenue:
+    get:
+      tags: [Reporting]
+      summary: Revenue and order count by day
+      security:
+        - bearerAuth: []
+        - apiKeyAuth: []
+      parameters:
+        - in: query
+          name: days
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 90
+      responses:
+        '200':
+          description: Revenue breakdown
+
+  /reporting/top-products:
+    get:
+      tags: [Reporting]
+      summary: Top selling products
+      security:
+        - bearerAuth: []
+        - apiKeyAuth: []
+      parameters:
+        - in: query
+          name: limit
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 50
+      responses:
+        '200':
+          description: Product ranking
+
+  /reporting/coupon-usage:
+    get:
+      tags: [Reporting]
+      summary: Coupon usage analytics
+      security:
+        - bearerAuth: []
+        - apiKeyAuth: []
+      parameters:
+        - in: query
+          name: limit
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 50
+      responses:
+        '200':
+          description: Coupon analytics
 
 components:
   securitySchemes:
@@ -963,6 +1608,10 @@ components:
       type: http
       scheme: bearer
       bearerFormat: JWT
+    apiKeyAuth:
+      type: apiKey
+      in: header
+      name: x-api-key
   schemas:
     LoginRequest:
       type: object
@@ -974,6 +1623,12 @@ components:
         password:
           type: string
           minLength: 8
+        otp:
+          type: string
+          minLength: 6
+        guestAccessToken:
+          type: string
+          minLength: 20
     RegisterRequest:
       type: object
       required: [email, password, fullName]
@@ -990,6 +1645,25 @@ components:
         phone:
           type: string
           minLength: 8
+        guestAccessToken:
+          type: string
+          minLength: 20
+    SocialLoginRequest:
+      type: object
+      required: [providerUserId, email]
+      properties:
+        providerUserId:
+          type: string
+        email:
+          type: string
+          format: email
+        fullName:
+          type: string
+        phone:
+          type: string
+        guestAccessToken:
+          type: string
+          minLength: 20
     RefreshRequest:
       type: object
       properties:
@@ -1020,6 +1694,77 @@ components:
         token:
           type: string
           minLength: 40
+    VerifyTwoFactorRequest:
+      type: object
+      required: [code]
+      properties:
+        code:
+          type: string
+          minLength: 6
+    CreateApiKeyRequest:
+      type: object
+      required: [name]
+      properties:
+        name:
+          type: string
+          minLength: 3
+          maxLength: 64
+        permissions:
+          type: array
+          items:
+            type: string
+            enum: [auth.manage, catalog.read, catalog.write, cart.write, orders.read, orders.manage, payments.manage, inventory.read, inventory.manage, shipping.manage, notifications.read, reporting.read]
+        expiresAt:
+          type: string
+          format: date-time
+    TwoFactorSetupResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+        enabled:
+          type: boolean
+        secret:
+          type: string
+        otpauthUrl:
+          type: string
+        debug:
+          type: object
+          properties:
+            currentCode:
+              type: string
+    ApiKeySummary:
+      type: object
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        keyPrefix:
+          type: string
+        permissions:
+          type: array
+          items:
+            type: string
+        lastUsedAt:
+          type: string
+          format: date-time
+        expiresAt:
+          type: string
+          format: date-time
+        revokedAt:
+          type: string
+          format: date-time
+        createdAt:
+          type: string
+          format: date-time
+    ApiKeyCreateResponse:
+      allOf:
+        - $ref: '#/components/schemas/ApiKeySummary'
+        - type: object
+          properties:
+            token:
+              type: string
     AuthResponse:
       type: object
       properties:
@@ -1027,10 +1772,22 @@ components:
           type: string
         refreshToken:
           type: string
+        csrfToken:
+          type: string
         expiresIn:
           type: integer
+        sessionId:
+          type: string
         verificationRequired:
           type: boolean
+        provider:
+          type: string
+        linkedAccount:
+          type: boolean
+        isNewAccount:
+          type: boolean
+        debug:
+          type: object
         user:
           type: object
           properties:
@@ -1045,6 +1802,15 @@ components:
             phone:
               type: string
             emailVerifiedAt:
+              type: string
+              format: date-time
+            twoFactorEnabledAt:
+              type: string
+              format: date-time
+            lastLoginAt:
+              type: string
+              format: date-time
+            createdAt:
               type: string
               format: date-time
     CreateCategoryRequest:
@@ -1108,9 +1874,48 @@ components:
           type: string
         metaDescription:
           type: string
+        variants:
+          type: array
+          items:
+            $ref: '#/components/schemas/ProductVariantRequest'
     UpdateProductRequest:
       allOf:
         - $ref: '#/components/schemas/CreateProductRequest'
+    ProductVariantWarehouseStockRequest:
+      type: object
+      required: [quantity]
+      properties:
+        warehouseCode:
+          type: string
+        quantity:
+          type: integer
+          minimum: 0
+    ProductVariantRequest:
+      type: object
+      required: [sku, name]
+      properties:
+        sku:
+          type: string
+        name:
+          type: string
+        attributes:
+          type: object
+          additionalProperties:
+            type: string
+        price:
+          type: integer
+          minimum: 0
+        stock:
+          type: integer
+          minimum: 0
+        isDefault:
+          type: boolean
+        isActive:
+          type: boolean
+        warehouseStocks:
+          type: array
+          items:
+            $ref: '#/components/schemas/ProductVariantWarehouseStockRequest'
     ImportProductsRequest:
       type: object
       required: [items]
@@ -1134,15 +1939,61 @@ components:
           type: boolean
         sortOrder:
           type: integer
+    CreateReviewRequest:
+      type: object
+      required: [rating, content]
+      properties:
+        rating:
+          type: integer
+          minimum: 1
+          maximum: 5
+        title:
+          type: string
+          maxLength: 120
+        content:
+          type: string
+          minLength: 10
+          maxLength: 2000
+        mediaUrls:
+          type: array
+          items:
+            type: string
+    ReplyReviewRequest:
+      type: object
+      required: [content]
+      properties:
+        content:
+          type: string
+          minLength: 2
+          maxLength: 1000
+    ModerateReviewRequest:
+      type: object
+      required: [status]
+      properties:
+        status:
+          type: string
+          enum: [pending, published, rejected]
+        adminReply:
+          type: string
+          minLength: 2
+          maxLength: 1000
     AddCartItemRequest:
       type: object
       required: [productId, quantity]
       properties:
         productId:
           type: string
+        variantId:
+          type: string
         quantity:
           type: integer
           minimum: 1
+    AddWishlistItemRequest:
+      type: object
+      required: [productId]
+      properties:
+        productId:
+          type: string
     UpdateCartItemRequest:
       type: object
       required: [quantity]
@@ -1216,6 +2067,13 @@ components:
         method:
           type: string
           enum: [cod, vnpay, momo, zalopay, stripe, paypal, bank_transfer]
+        returnUrl:
+          type: string
+          format: uri
+        ipAddress:
+          type: string
+        locale:
+          type: string
     RefundPaymentRequest:
       type: object
       properties:
@@ -1245,8 +2103,29 @@ components:
       properties:
         productId:
           type: string
+        variantId:
+          type: string
+        warehouseCode:
+          type: string
         quantity:
           type: integer
+        note:
+          type: string
+    TransferInventoryRequest:
+      type: object
+      required: [productId, fromWarehouseCode, toWarehouseCode, quantity]
+      properties:
+        productId:
+          type: string
+        variantId:
+          type: string
+        fromWarehouseCode:
+          type: string
+        toWarehouseCode:
+          type: string
+        quantity:
+          type: integer
+          minimum: 1
         note:
           type: string
     CalculateShippingRequest:
@@ -1263,9 +2142,149 @@ components:
           type: string
         district:
           type: string
+        carrier:
+          type: string
+          enum: [ghn, ghtk, jt, viettel_post, grab_express]
+        weightGrams:
+          type: integer
+          minimum: 100
     CreateShipmentRequest:
       type: object
       required: [orderId]
       properties:
         orderId:
           type: string
+        carrier:
+          type: string
+          enum: [internal, ghn, ghtk, jt, viettel_post, grab_express]
+        serviceCode:
+          type: string
+    CreateTrackingEventRequest:
+      type: object
+      required: [status]
+      properties:
+        status:
+          type: string
+          enum: [pending, packed, in_transit, delivered, returned, canceled]
+        code:
+          type: string
+        title:
+          type: string
+        description:
+          type: string
+        location:
+          type: string
+        occurredAt:
+          type: string
+          format: date-time
+        carrier:
+          type: string
+          enum: [internal, ghn, ghtk, jt, viettel_post, grab_express]
+    UpdateNotificationPreferencesRequest:
+      type: object
+      properties:
+        orderInApp:
+          type: boolean
+        orderEmail:
+          type: boolean
+        promotionInApp:
+          type: boolean
+        promotionEmail:
+          type: boolean
+        securityInApp:
+          type: boolean
+        securityEmail:
+          type: boolean
+        systemInApp:
+          type: boolean
+        systemEmail:
+          type: boolean
+        pushEnabled:
+          type: boolean
+        smsEnabled:
+          type: boolean
+        marketingOptIn:
+          type: boolean
+    UnsubscribeNotificationsRequest:
+      type: object
+      properties:
+        type:
+          type: string
+          enum: [order, system, promotion, security]
+        channel:
+          type: string
+          enum: [in_app, email, sms, push]
+    CreateNotificationTemplateRequest:
+      type: object
+      required: [key, channel, titleTemplate, contentTemplate]
+      properties:
+        key:
+          type: string
+        channel:
+          type: string
+          enum: [in_app, email, sms, push]
+        subjectTemplate:
+          type: string
+        titleTemplate:
+          type: string
+        contentTemplate:
+          type: string
+        isActive:
+          type: boolean
+    UpdateNotificationTemplateRequest:
+      type: object
+      properties:
+        key:
+          type: string
+        channel:
+          type: string
+          enum: [in_app, email, sms, push]
+        subjectTemplate:
+          type: string
+        titleTemplate:
+          type: string
+        contentTemplate:
+          type: string
+        isActive:
+          type: boolean
+    PreviewNotificationTemplateRequest:
+      type: object
+      properties:
+        data:
+          type: object
+          additionalProperties: true
+    CreateNotificationBatchRequest:
+      type: object
+      required: [userIds, type, channel]
+      properties:
+        userIds:
+          type: array
+          items:
+            type: string
+        type:
+          type: string
+          enum: [order, system, promotion, security]
+        channel:
+          type: string
+          enum: [in_app, email, sms, push]
+        templateId:
+          type: string
+        title:
+          type: string
+        content:
+          type: string
+        campaignKey:
+          type: string
+        scheduledFor:
+          type: string
+          format: date-time
+        data:
+          type: object
+          additionalProperties: true
+    DispatchScheduledNotificationsRequest:
+      type: object
+      properties:
+        limit:
+          type: integer
+          minimum: 1
+          maximum: 500

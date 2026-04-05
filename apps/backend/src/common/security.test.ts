@@ -1,11 +1,15 @@
 import assert from 'node:assert/strict';
-import test from 'node:test';
+import { test } from 'node:test';
 import {
+  buildOtpAuthUrl,
   comparePassword,
   generateId,
   generateToken,
+  generateTotpCode,
+  generateTotpSecret,
   hashOpaqueToken,
   hashPassword,
+  verifyTotpCode,
 } from './security';
 
 test('security.hashPassword and comparePassword work with bcrypt', async () => {
@@ -32,4 +36,18 @@ test('security.hashOpaqueToken is deterministic for the same input', () => {
 
   assert.equal(hashOpaqueToken(token, secret), hashOpaqueToken(token, secret));
   assert.notEqual(hashOpaqueToken(token, secret), hashOpaqueToken('different', secret));
+});
+
+test('security TOTP helpers generate valid codes and otpauth urls', () => {
+  const secret = generateTotpSecret();
+  const now = new Date('2026-04-05T00:00:00.000Z').getTime();
+  const code = generateTotpCode(secret, now);
+  const url = buildOtpAuthUrl('BanHang', 'user@example.com', secret);
+
+  assert.match(secret, /^[A-Z2-7]+$/);
+  assert.match(code, /^\d{6}$/);
+  assert.equal(verifyTotpCode(secret, code, now), true);
+  assert.equal(verifyTotpCode(secret, code, now + 30_000), true);
+  assert.equal(verifyTotpCode(secret, '000000', now), false);
+  assert.match(url, /^otpauth:\/\/totp\/BanHang:user%40example\.com\?/);
 });

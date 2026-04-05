@@ -16,4 +16,9 @@ export class RegisterDto {
   @IsString()
   @MinLength(8)
   phone?: string;
+
+  @IsOptional()
+  @IsString()
+  @MinLength(20)
+  guestAccessToken?: string;
 }

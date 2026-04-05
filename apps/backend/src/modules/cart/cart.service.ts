@@ -19,6 +19,7 @@ export class CartService {
               },
             },
           },
+          variant: true,
         },
         orderBy: { createdAt: 'desc' },
       }),
@@ -31,24 +32,18 @@ export class CartService {
     return this.formatCart(rows, cartCoupon?.coupon ?? null);
   }
 
-  async addItem(userId: string, productId: string, quantity: number) {
-    const product = await this.prisma.product.findUnique({ where: { id: productId } });
-
-    if (!product || product.status !== ProductStatus.active) {
-      throw new NotFoundException('Product not found');
-    }
-
-    const existing = await this.prisma.cartItem.findUnique({
+  async addItem(userId: string, productId: string, quantity: number, variantId?: string) {
+    const selection = await this.resolvePurchaseSelection(productId, variantId);
+    const existing = await this.prisma.cartItem.findFirst({
       where: {
-        userId_productId: {
-          userId,
-          productId,
-        },
+        userId,
+        productId,
+        variantId: selection.variant.id,
       },
     });
 
     const nextQuantity = (existing?.quantity ?? 0) + quantity;
-    this.assertStock(product.stock, nextQuantity);
+    this.assertStock(selection.variant.stock, nextQuantity);
 
     if (existing) {
       await this.prisma.cartItem.update({
@@ -60,6 +55,7 @@ export class CartService {
         data: {
           userId,
           productId,
+          variantId: selection.variant.id,
           quantity,
         },
       });
@@ -68,23 +64,11 @@ export class CartService {
     return this.getCart(userId);
   }
 
-  async setQuantity(userId: string, productId: string, quantity: number) {
-    const product = await this.prisma.product.findUnique({ where: { id: productId } });
+  async setQuantity(userId: string, productId: string, quantity: number, variantId?: string) {
+    const selection = await this.resolvePurchaseSelection(productId, variantId);
+    this.assertStock(selection.variant.stock, quantity);
 
-    if (!product || product.status !== ProductStatus.active) {
-      throw new NotFoundException('Product not found');
-    }
-
-    this.assertStock(product.stock, quantity);
-
-    const existing = await this.prisma.cartItem.findUnique({
-      where: {
-        userId_productId: {
-          userId,
-          productId,
-        },
-      },
-    });
+    const existing = await this.resolveCartLine(userId, productId, selection.variant.id);
 
     if (!existing) {
       throw new NotFoundException('Item not found in cart');
@@ -98,20 +82,23 @@ export class CartService {
     return this.getCart(userId);
   }
 
-  async removeItem(userId: string, productId: string) {
+  async removeItem(userId: string, productId: string, variantId?: string) {
+    const target = await this.resolveCartLine(userId, productId, variantId);
+
     await this.prisma.cartItem.deleteMany({
       where: {
         userId,
         productId,
+        variantId: target.variantId,
       },
     });
 
     return this.getCart(userId);
   }
 
-  async merge(userId: string, items: Array<{ productId: string; quantity: number }>) {
+  async merge(userId: string, items: Array<{ productId: string; quantity: number; variantId?: string }>) {
     for (const item of items) {
-      await this.addItem(userId, item.productId, item.quantity);
+      await this.addItem(userId, item.productId, item.quantity, item.variantId);
     }
 
     return this.getCart(userId);
@@ -155,17 +142,20 @@ export class CartService {
     return this.getCart(userId);
   }
 
-  async saveForLater(userId: string, productId: string) {
+  async saveForLater(userId: string, productId: string, variantId?: string) {
     const product = await this.prisma.product.findUnique({ where: { id: productId } });
     if (!product) {
       throw new NotFoundException('Product not found');
     }
+
+    const target = await this.resolveCartLine(userId, productId, variantId);
 
     await this.prisma.$transaction(async (tx) => {
       await tx.cartItem.deleteMany({
         where: {
           userId,
           productId,
+          variantId: target.variantId,
         },
       });
 
@@ -204,27 +194,42 @@ export class CartService {
 
   private formatCart(
     rows: Array<{
+      variantId: string;
       quantity: number;
       product: {
         id: string;
+        sku: string;
         slug: string;
         name: string;
         price: number;
         stock: number;
         media: Array<{ url: string }>;
       };
+      variant: {
+        id: string;
+        sku: string;
+        name: string;
+        price: number;
+        stock: number;
+        attributes: unknown;
+      };
     }>,
     coupon: Coupon | null,
   ) {
     const items = rows.map((row) => ({
       productId: row.product.id,
+      productSku: row.product.sku,
       slug: row.product.slug,
       name: row.product.name,
       imageUrl: row.product.media[0]?.url ?? null,
-      unitPrice: row.product.price,
+      variantId: row.variant.id,
+      variantSku: row.variant.sku,
+      variantName: row.variant.name,
+      variantAttributes: row.variant.attributes,
+      unitPrice: row.variant.price,
       quantity: row.quantity,
-      stock: row.product.stock,
-      lineTotal: row.product.price * row.quantity,
+      stock: row.variant.stock,
+      lineTotal: row.variant.price * row.quantity,
     }));
 
     const subtotal = items.reduce((sum, item) => sum + item.lineTotal, 0);
@@ -251,6 +256,64 @@ export class CartService {
     if (quantity > stock) {
       throw new BadRequestException('Quantity exceeds stock');
     }
+  }
+
+  private async resolvePurchaseSelection(productId: string, variantId?: string) {
+    const product = await this.prisma.product.findUnique({
+      where: { id: productId },
+      include: {
+        variants: {
+          where: { isActive: true },
+          orderBy: [{ isDefault: 'desc' }, { createdAt: 'asc' }],
+        },
+      },
+    });
+
+    if (!product || product.status !== ProductStatus.active) {
+      throw new NotFoundException('Product not found');
+    }
+
+    const variant = variantId
+      ? product.variants.find((item) => item.id === variantId)
+      : product.variants.find((item) => item.isDefault) ?? product.variants[0];
+
+    if (!variant) {
+      throw new BadRequestException('Product has no active variants');
+    }
+
+    return { product, variant };
+  }
+
+  private async resolveCartLine(userId: string, productId: string, variantId?: string) {
+    const rows = await this.prisma.cartItem.findMany({
+      where: {
+        userId,
+        productId,
+      },
+      select: {
+        id: true,
+        variantId: true,
+      },
+    });
+
+    if (!rows.length) {
+      throw new NotFoundException('Item not found in cart');
+    }
+
+    if (variantId) {
+      const matched = rows.find((row) => row.variantId === variantId);
+      if (!matched) {
+        throw new NotFoundException('Item not found in cart');
+      }
+
+      return matched;
+    }
+
+    if (rows.length > 1) {
+      throw new BadRequestException('variantId is required for products with multiple cart lines');
+    }
+
+    return rows[0];
   }
 
   private assertCouponValid(coupon: Coupon, subtotal: number) {

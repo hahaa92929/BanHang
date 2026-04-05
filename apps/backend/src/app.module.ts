@@ -3,6 +3,7 @@ import { APP_GUARD } from '@nestjs/core';
 import { ConfigModule } from '@nestjs/config';
 import { ThrottlerModule } from '@nestjs/throttler';
 import { AppController } from './app.controller';
+import { AuthOrApiKeyGuard } from './common/auth-or-api-key.guard';
 import { AppThrottlerGuard } from './common/app-throttler.guard';
 import { JwtGuard } from './common/jwt.guard';
 import { PermissionsGuard } from './common/permissions.guard';
@@ -19,6 +20,7 @@ import { PaymentsModule } from './modules/payments/payments.module';
 import { ProductsModule } from './modules/products/products.module';
 import { ReportingModule } from './modules/reporting/reporting.module';
 import { ShippingModule } from './modules/shipping/shipping.module';
+import { WishlistModule } from './modules/wishlist/wishlist.module';
 
 @Module({
   imports: [
@@ -42,10 +44,12 @@ import { ShippingModule } from './modules/shipping/shipping.module';
     ShippingModule,
     NotificationsModule,
     ReportingModule,
+    WishlistModule,
   ],
   controllers: [AppController],
   providers: [
     JwtGuard,
+    AuthOrApiKeyGuard,
     RolesGuard,
     PermissionsGuard,
     {
