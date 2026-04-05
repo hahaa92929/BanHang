@@ -2,7 +2,9 @@ import { MiddlewareConsumer, Module, NestModule } from '@nestjs/common';
 import { APP_GUARD } from '@nestjs/core';
 import { ConfigModule } from '@nestjs/config';
 import { ThrottlerModule } from '@nestjs/throttler';
+import { resolve } from 'node:path';
 import { AppController } from './app.controller';
+import { AccountModule } from './modules/account/account.module';
 import { AuthOrApiKeyGuard } from './common/auth-or-api-key.guard';
 import { AppThrottlerGuard } from './common/app-throttler.guard';
 import { JwtGuard } from './common/jwt.guard';
@@ -19,6 +21,7 @@ import { OrdersModule } from './modules/orders/orders.module';
 import { PaymentsModule } from './modules/payments/payments.module';
 import { ProductsModule } from './modules/products/products.module';
 import { ReportingModule } from './modules/reporting/reporting.module';
+import { SearchModule } from './modules/search/search.module';
 import { ShippingModule } from './modules/shipping/shipping.module';
 import { WishlistModule } from './modules/wishlist/wishlist.module';
 
@@ -26,6 +29,10 @@ import { WishlistModule } from './modules/wishlist/wishlist.module';
   imports: [
     ConfigModule.forRoot({
       isGlobal: true,
+      envFilePath: [
+        resolve(process.cwd(), '.env'),
+        resolve(process.cwd(), '..', '..', '.env'),
+      ],
       validate: validateEnv,
     }),
     ThrottlerModule.forRoot([
@@ -35,6 +42,7 @@ import { WishlistModule } from './modules/wishlist/wishlist.module';
       },
     ]),
     PrismaModule,
+    AccountModule,
     AuthModule,
     ProductsModule,
     CartModule,
@@ -44,6 +52,7 @@ import { WishlistModule } from './modules/wishlist/wishlist.module';
     ShippingModule,
     NotificationsModule,
     ReportingModule,
+    SearchModule,
     WishlistModule,
   ],
   controllers: [AppController],

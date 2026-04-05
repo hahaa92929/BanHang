@@ -2,6 +2,11 @@ node_modules/
 .next/
 dist/
 .env
+.env.local
+apps/backend/.env
+apps/backend/.env.local
+apps/frontend/.env
+apps/frontend/.env.local
 coverage/
 playwright-report/
 test-results/

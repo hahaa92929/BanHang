@@ -130,6 +130,21 @@ Cart and checkout:
 - `POST /api/v1/orders/reservations/:id/cancel`
 - `POST /api/v1/orders/checkout`
 
+Customer account:
+- `GET /api/v1/account/dashboard`
+- `GET /api/v1/account/orders`
+- `POST /api/v1/account/orders/:id/reorder`
+- `GET /api/v1/account/loyalty`
+- `GET /api/v1/account/profile`
+- `PATCH /api/v1/account/profile`
+- `GET /api/v1/account/addresses`
+- `POST /api/v1/account/addresses`
+- `PATCH /api/v1/account/addresses/:id`
+- `POST /api/v1/account/addresses/:id/default`
+- `DELETE /api/v1/account/addresses/:id`
+- `GET /api/v1/account/export`
+- `DELETE /api/v1/account`
+
 Orders and payments:
 - `GET /api/v1/orders`
 - `GET /api/v1/orders/:id`
@@ -174,6 +189,12 @@ Ops and admin:
 - `GET /api/v1/reporting/revenue`
 - `GET /api/v1/reporting/top-products`
 - `GET /api/v1/reporting/coupon-usage`
+- `GET /api/v1/search`
+- `GET /api/v1/search/suggestions`
+- `GET /api/v1/search/trending`
+- `GET /api/v1/search/recent`
+- `DELETE /api/v1/search/recent`
+- `GET /api/v1/search/analytics`
 
 Catalog and inventory notes:
 - `POST /api/v1/products` va `PATCH /api/v1/products/:id` co the nhan `variants[]` voi `warehouseStocks[]` de tao cap nhat ton kho theo warehouse.
@@ -187,6 +208,8 @@ Catalog and inventory notes:
 - `POST /api/v1/shipping/create` co the chon `carrier/serviceCode`; backend luu carrier, service code, label URL, va tao shipment tracking timeline theo order.
 - `POST /api/v1/shipping/:id/events` cho phep staff/admin append tracking event de dong bo trang thai van chuyen va thong bao in-app.
 - Notifications co them template CRUD, batch campaign, scheduled dispatch, va unsubscribe handling; notification duoc schedule se an khoi inbox cho toi khi den han dispatch.
+- Account module co dashboard summary, order history filter/search, one-click reorder, loyalty summary, profile update, address book CRUD, data export, va `DELETE /api/v1/account` de anonymize tai khoan theo huong GDPR-style self-service.
+- Search module co full-text query/facets, autocomplete, trending keywords, fuzzy typo suggestion, analytics zero-result, va recent search history cho customer da dang nhap.
 
 Auth notes:
 - `POST /api/v1/auth/guest` tao guest bearer token de guest dung cart, reservation, va checkout flow ma khong can dang ky.
@@ -202,6 +225,7 @@ Payments and reporting notes:
 
 ## Docs
 - Runbook: `docs/runbook.md`
+- Architecture: `docs/architecture.md`
 - OpenAPI: `docs/openapi.yaml`
 - Generated SQL schema: `docs/db-schema.sql`
 

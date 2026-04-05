@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
+import { AccountController } from './account/account.controller';
 import { AuthController } from './auth/auth.controller';
 import { CartController } from './cart/cart.controller';
 import { InventoryController } from './inventory/inventory.controller';
@@ -8,6 +9,7 @@ import { OrdersController } from './orders/orders.controller';
 import { PaymentsController } from './payments/payments.controller';
 import { ProductsController } from './products/products.controller';
 import { ReportingController } from './reporting/reporting.controller';
+import { SearchController } from './search/search.controller';
 import { ShippingController } from './shipping/shipping.controller';
 import { WishlistController } from './wishlist/wishlist.controller';
 
@@ -331,6 +333,109 @@ test('AuthController forwards request metadata and session actions', async () =>
     cookieCalls.filter((entry) => entry.method === 'clearCookie').length,
     2,
   );
+});
+
+test('AccountController forwards dashboard orders loyalty profile address and export actions', () => {
+  const calls: Array<{ method: string; args: unknown[] }> = [];
+  const service = {
+    dashboard: (...args: unknown[]) => {
+      calls.push({ method: 'dashboard', args });
+      return { totalOrders: 2 };
+    },
+    listOrders: (...args: unknown[]) => {
+      calls.push({ method: 'listOrders', args });
+      return { total: 1, data: [] };
+    },
+    reorder: (...args: unknown[]) => {
+      calls.push({ method: 'reorder', args });
+      return { success: true, addedItems: 1 };
+    },
+    loyalty: (...args: unknown[]) => {
+      calls.push({ method: 'loyalty', args });
+      return { pointsBalance: 1500 };
+    },
+    profile: (...args: unknown[]) => {
+      calls.push({ method: 'profile', args });
+      return { id: 'u-1' };
+    },
+    updateProfile: (...args: unknown[]) => {
+      calls.push({ method: 'updateProfile', args });
+      return { fullName: 'Updated' };
+    },
+    listAddresses: (...args: unknown[]) => {
+      calls.push({ method: 'listAddresses', args });
+      return { total: 1, data: [] };
+    },
+    createAddress: (...args: unknown[]) => {
+      calls.push({ method: 'createAddress', args });
+      return { total: 2, data: [] };
+    },
+    updateAddress: (...args: unknown[]) => {
+      calls.push({ method: 'updateAddress', args });
+      return { total: 2, data: [] };
+    },
+    setDefaultAddress: (...args: unknown[]) => {
+      calls.push({ method: 'setDefaultAddress', args });
+      return { total: 2, data: [] };
+    },
+    deleteAddress: (...args: unknown[]) => {
+      calls.push({ method: 'deleteAddress', args });
+      return { total: 1, data: [] };
+    },
+    exportData: (...args: unknown[]) => {
+      calls.push({ method: 'exportData', args });
+      return { exportedAt: '2026-04-05T00:00:00.000Z' };
+    },
+    deleteAccount: (...args: unknown[]) => {
+      calls.push({ method: 'deleteAccount', args });
+      return { success: true };
+    },
+  };
+  const controller = new AccountController(service as any);
+  const request = { user: { sub: 'u-1' } } as any;
+  const profileBody = { fullName: 'Updated' } as any;
+  const addressBody = {
+    fullName: 'Nguyen Van A',
+    phone: '0909000000',
+    district: 'District 1',
+    addressLine: '123 Nguyen Hue',
+  } as any;
+  const updateAddressBody = { label: 'Office' } as any;
+  const deleteBody = { password: 'secret123', reason: 'privacy_request' } as any;
+  const ordersQuery = { status: 'completed', page: 1, limit: 5 } as any;
+
+  assert.deepEqual(controller.dashboard(request), { totalOrders: 2 });
+  assert.deepEqual(controller.orders(request, ordersQuery), { total: 1, data: [] });
+  assert.deepEqual(controller.reorder(request, 'ord-1'), { success: true, addedItems: 1 });
+  assert.deepEqual(controller.loyalty(request), { pointsBalance: 1500 });
+  assert.deepEqual(controller.profile(request), { id: 'u-1' });
+  assert.deepEqual(controller.updateProfile(request, profileBody), { fullName: 'Updated' });
+  assert.deepEqual(controller.addresses(request), { total: 1, data: [] });
+  assert.deepEqual(controller.createAddress(request, addressBody), { total: 2, data: [] });
+  assert.deepEqual(controller.updateAddress(request, 'addr-1', updateAddressBody), {
+    total: 2,
+    data: [],
+  });
+  assert.deepEqual(controller.setDefaultAddress(request, 'addr-1'), { total: 2, data: [] });
+  assert.deepEqual(controller.deleteAddress(request, 'addr-1'), { total: 1, data: [] });
+  assert.deepEqual(controller.exportData(request), { exportedAt: '2026-04-05T00:00:00.000Z' });
+  assert.deepEqual(controller.deleteAccount(request, deleteBody), { success: true });
+
+  assert.deepEqual(calls, [
+    { method: 'dashboard', args: ['u-1'] },
+    { method: 'listOrders', args: ['u-1', ordersQuery] },
+    { method: 'reorder', args: ['u-1', 'ord-1'] },
+    { method: 'loyalty', args: ['u-1'] },
+    { method: 'profile', args: ['u-1'] },
+    { method: 'updateProfile', args: ['u-1', profileBody] },
+    { method: 'listAddresses', args: ['u-1'] },
+    { method: 'createAddress', args: ['u-1', addressBody] },
+    { method: 'updateAddress', args: ['u-1', 'addr-1', updateAddressBody] },
+    { method: 'setDefaultAddress', args: ['u-1', 'addr-1'] },
+    { method: 'deleteAddress', args: ['u-1', 'addr-1'] },
+    { method: 'exportData', args: ['u-1'] },
+    { method: 'deleteAccount', args: ['u-1', deleteBody] },
+  ]);
 });
 
 test('CartController forwards cart mutations to service', () => {
@@ -817,6 +922,59 @@ test('ReportingController forwards analytics queries', () => {
     { method: 'revenue', args: [14] },
     { method: 'topProducts', args: [5] },
     { method: 'couponUsage', args: [8] },
+  ]);
+});
+
+test('SearchController forwards search suggestions trending and analytics', () => {
+  const calls: Array<{ method: string; args: unknown[] }> = [];
+  const service = {
+    search: (...args: unknown[]) => {
+      calls.push({ method: 'search', args });
+      return { total: 1 };
+    },
+    suggestions: (...args: unknown[]) => {
+      calls.push({ method: 'suggestions', args });
+      return { products: [] };
+    },
+    trending: (...args: unknown[]) => {
+      calls.push({ method: 'trending', args });
+      return { data: [] };
+    },
+    recent: (...args: unknown[]) => {
+      calls.push({ method: 'recent', args });
+      return { data: [] };
+    },
+    clearRecent: (...args: unknown[]) => {
+      calls.push({ method: 'clearRecent', args });
+      return { deletedCount: 2 };
+    },
+    analytics: (...args: unknown[]) => {
+      calls.push({ method: 'analytics', args });
+      return { popularQueries: [] };
+    },
+  };
+  const controller = new SearchController(service as any);
+  const request = { user: { sub: 'u-1' } } as any;
+  const searchQuery = { q: 'iphone', limit: 8 } as any;
+  const suggestionQuery = { q: 'ip', limit: 5 } as any;
+  const trendingQuery = { limit: 5, days: 7 } as any;
+  const recentQuery = { limit: 6 } as any;
+  const analyticsQuery = { limit: 10, days: 30, zeroOnly: true } as any;
+
+  assert.deepEqual(controller.search(request, searchQuery), { total: 1 });
+  assert.deepEqual(controller.suggestions(suggestionQuery), { products: [] });
+  assert.deepEqual(controller.trending(trendingQuery), { data: [] });
+  assert.deepEqual(controller.recent(request, recentQuery), { data: [] });
+  assert.deepEqual(controller.clearRecent(request), { deletedCount: 2 });
+  assert.deepEqual(controller.analytics(analyticsQuery), { popularQueries: [] });
+
+  assert.deepEqual(calls, [
+    { method: 'search', args: [searchQuery, 'u-1'] },
+    { method: 'suggestions', args: ['ip', 5] },
+    { method: 'trending', args: [5, 7] },
+    { method: 'recent', args: ['u-1', 6] },
+    { method: 'clearRecent', args: ['u-1'] },
+    { method: 'analytics', args: [analyticsQuery] },
   ]);
 });
 

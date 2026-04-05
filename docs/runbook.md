@@ -171,6 +171,63 @@ Trang chủ → Duyệt danh mục → Tìm kiếm/Lọc sản phẩm → Xem ch
    └─────────────┘
 ```
 
+#### Mermaid diagram cập nhật theo source code hiện tại
+
+> Bản Mermaid bám theo repo hiện tại được lưu tại [architecture.md](./architecture.md).  
+> Lưu ý: source code hiện tại đang triển khai theo mô hình **NestJS modular monolith**, còn sơ đồ bên dưới thể hiện **target microservices architecture** để tách service về sau.
+
+```mermaid
+flowchart TB
+  U[Users] --> FE[Next.js Frontend]
+  FE --> GW[API Gateway / BFF]
+
+  GW --> AUTH[Auth]
+  GW --> ACCOUNT[Account]
+  GW --> CATALOG[Catalog]
+  GW --> SEARCH[Search]
+  GW --> CART[Cart]
+  GW --> WISHLIST[Wishlist]
+  GW --> ORDER[Order]
+  GW --> PAYMENT[Payment]
+  GW --> INVENTORY[Inventory]
+  GW --> SHIPPING[Shipping]
+  GW --> NOTIFY[Notification]
+  GW --> REPORT[Reporting]
+
+  CART --> CATALOG
+  CART --> INVENTORY
+  ORDER --> INVENTORY
+  ORDER --> PAYMENT
+  ORDER --> SHIPPING
+  ORDER --> NOTIFY
+  PAYMENT --> NOTIFY
+  CATALOG --> SEARCH
+  ORDER --> REPORT
+  PAYMENT --> REPORT
+
+  AUTH <--> REDIS[(Redis)]
+  CART <--> REDIS
+  CATALOG <--> REDIS
+  SEARCH <--> ES[(Elasticsearch)]
+
+  AUTH <--> PG[(PostgreSQL)]
+  ACCOUNT <--> PG
+  CATALOG <--> PG
+  CART <--> PG
+  WISHLIST <--> PG
+  ORDER <--> PG
+  PAYMENT <--> PG
+  INVENTORY <--> PG
+  SHIPPING <--> PG
+  NOTIFY <--> PG
+  REPORT <--> PG
+
+  CATALOG --> MQ[(RabbitMQ / Kafka)]
+  ORDER --> MQ
+  PAYMENT --> MQ
+  SHIPPING --> MQ
+```
+
 ### 3.2 Lựa chọn công nghệ (Tech Stack)
 
 | Layer | Công nghệ | Lý do chọn |
@@ -460,6 +517,9 @@ Bước 4: Xác nhận đơn hàng
 ## 5. Backend - Chi tiết chức năng
 
 ### 5.1 Kiến trúc Microservices
+
+> Tham chiếu thêm sơ đồ Mermaid và mapping `module -> service` tại [architecture.md](./architecture.md).  
+> Trong source code hiện tại, các service này đang được triển khai dưới dạng **domain modules** bên trong một backend NestJS duy nhất, đủ boundary để tách thành microservices khi cần.
 
 #### Service 1: Catalog Service
 ```

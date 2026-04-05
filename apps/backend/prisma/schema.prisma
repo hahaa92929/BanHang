@@ -696,6 +696,21 @@ model NotificationTemplate {
   @@index([channel, isActive])
 }
 
+model SearchQueryEvent {
+  id              String   @id @default(cuid())
+  userId          String?
+  query           String
+  normalizedQuery String
+  expandedTerms   String[]
+  resultCount     Int
+  source          String   @default("web")
+  createdAt       DateTime @default(now())
+
+  @@index([normalizedQuery, createdAt])
+  @@index([resultCount, createdAt])
+  @@index([createdAt])
+}
+
 model ShippingTrackingEvent {
   id          String           @id @default(cuid())
   orderId      String

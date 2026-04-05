@@ -526,6 +526,20 @@ CREATE TABLE "NotificationTemplate" (
 );
 
 -- CreateTable
+CREATE TABLE "SearchQueryEvent" (
+    "id" TEXT NOT NULL,
+    "userId" TEXT,
+    "query" TEXT NOT NULL,
+    "normalizedQuery" TEXT NOT NULL,
+    "expandedTerms" TEXT[],
+    "resultCount" INTEGER NOT NULL,
+    "source" TEXT NOT NULL DEFAULT 'web',
+    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    CONSTRAINT "SearchQueryEvent_pkey" PRIMARY KEY ("id")
+);
+
+-- CreateTable
 CREATE TABLE "ShippingTrackingEvent" (
     "id" TEXT NOT NULL,
     "orderId" TEXT NOT NULL,
@@ -806,6 +820,15 @@ CREATE INDEX "NotificationTemplate_channel_isActive_idx" ON "NotificationTemplat
 
 -- CreateIndex
 CREATE UNIQUE INDEX "NotificationTemplate_key_channel_key" ON "NotificationTemplate"("key", "channel");
+
+-- CreateIndex
+CREATE INDEX "SearchQueryEvent_normalizedQuery_createdAt_idx" ON "SearchQueryEvent"("normalizedQuery", "createdAt");
+
+-- CreateIndex
+CREATE INDEX "SearchQueryEvent_resultCount_createdAt_idx" ON "SearchQueryEvent"("resultCount", "createdAt");
+
+-- CreateIndex
+CREATE INDEX "SearchQueryEvent_createdAt_idx" ON "SearchQueryEvent"("createdAt");
 
 -- CreateIndex
 CREATE INDEX "ShippingTrackingEvent_orderId_occurredAt_idx" ON "ShippingTrackingEvent"("orderId", "occurredAt");

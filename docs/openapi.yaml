@@ -8,6 +8,8 @@ servers:
 tags:
   - name: Health
   - name: Auth
+  - name: Account
+  - name: Search
   - name: Catalog
   - name: Cart
   - name: Orders
@@ -301,6 +303,347 @@ paths:
       responses:
         '200':
           description: Logout success
+
+  /account:
+    delete:
+      tags: [Account]
+      summary: Delete and anonymize the current customer account
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DeleteAccountRequest'
+      responses:
+        '200':
+          description: Account anonymized and personal side data removed
+
+  /account/dashboard:
+    get:
+      tags: [Account]
+      summary: Customer dashboard summary
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Dashboard summary
+
+  /account/orders:
+    get:
+      tags: [Account]
+      summary: List current customer orders with filter and search
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: query
+          name: q
+          schema:
+            type: string
+        - in: query
+          name: status
+          schema:
+            type: string
+            enum: [created, confirmed, shipping, completed, canceled, returned]
+        - in: query
+          name: page
+          schema:
+            type: integer
+            minimum: 1
+        - in: query
+          name: limit
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 50
+      responses:
+        '200':
+          description: Paged customer order list
+
+  /account/orders/{id}/reorder:
+    post:
+      tags: [Account]
+      summary: Re-add a previous order into the current cart
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Reorder result with added and skipped items
+
+  /account/loyalty:
+    get:
+      tags: [Account]
+      summary: Loyalty summary and earning history derived from completed orders
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Loyalty points balance, tier, and history
+
+  /account/profile:
+    get:
+      tags: [Account]
+      summary: Get current customer profile
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Customer profile
+    patch:
+      tags: [Account]
+      summary: Update current customer profile
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateProfileRequest'
+      responses:
+        '200':
+          description: Customer profile updated
+
+  /account/addresses:
+    get:
+      tags: [Account]
+      summary: List address book
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Address book
+    post:
+      tags: [Account]
+      summary: Create address
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateAccountAddressRequest'
+      responses:
+        '200':
+          description: Address book updated
+
+  /account/addresses/{id}:
+    patch:
+      tags: [Account]
+      summary: Update address
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateAccountAddressRequest'
+      responses:
+        '200':
+          description: Address book updated
+    delete:
+      tags: [Account]
+      summary: Delete address
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Address book updated
+
+  /account/addresses/{id}/default:
+    post:
+      tags: [Account]
+      summary: Set default address
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Address book updated
+
+  /account/export:
+    get:
+      tags: [Account]
+      summary: Export current customer data
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Customer data export
+
+  /search:
+    get:
+      tags: [Search]
+      summary: Full-text product search with facets and typo suggestion
+      parameters:
+        - in: query
+          name: q
+          required: true
+          schema:
+            type: string
+        - in: query
+          name: category
+          schema:
+            type: string
+        - in: query
+          name: brand
+          schema:
+            type: string
+        - in: query
+          name: minPrice
+          schema:
+            type: integer
+        - in: query
+          name: maxPrice
+          schema:
+            type: integer
+        - in: query
+          name: inStock
+          schema:
+            type: boolean
+        - in: query
+          name: page
+          schema:
+            type: integer
+            minimum: 1
+        - in: query
+          name: limit
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 50
+        - in: query
+          name: sort
+          schema:
+            type: string
+            enum: [relevance, newest, price_asc, price_desc, rating_desc]
+        - in: query
+          name: source
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Search result page with facets and suggestion
+
+  /search/suggestions:
+    get:
+      tags: [Search]
+      summary: Autocomplete suggestions for products, brands, categories, and queries
+      parameters:
+        - in: query
+          name: q
+          required: true
+          schema:
+            type: string
+        - in: query
+          name: limit
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 20
+      responses:
+        '200':
+          description: Search suggestions
+
+  /search/trending:
+    get:
+      tags: [Search]
+      summary: Trending search keywords with optional fallback to best-selling products
+      parameters:
+        - in: query
+          name: limit
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 20
+        - in: query
+          name: days
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 90
+      responses:
+        '200':
+          description: Trending search analytics
+
+  /search/recent:
+    get:
+      tags: [Search]
+      summary: List recent searches for the current customer
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: query
+          name: limit
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 20
+      responses:
+        '200':
+          description: Recent search history
+    delete:
+      tags: [Search]
+      summary: Clear recent search history for the current customer
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Search history cleared
+
+  /search/analytics:
+    get:
+      tags: [Search]
+      summary: Aggregated search analytics for reporting and zero-result monitoring
+      security:
+        - bearerAuth: []
+        - apiKeyAuth: []
+      parameters:
+        - in: query
+          name: limit
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 50
+        - in: query
+          name: days
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 90
+        - in: query
+          name: zeroOnly
+          schema:
+            type: boolean
+      responses:
+        '200':
+          description: Search analytics summary
 
   /products:
     get:
@@ -1648,6 +1991,76 @@ components:
         guestAccessToken:
           type: string
           minLength: 20
+    UpdateProfileRequest:
+      type: object
+      properties:
+        fullName:
+          type: string
+          minLength: 2
+        phone:
+          type: string
+          minLength: 8
+    DeleteAccountRequest:
+      type: object
+      required: [password]
+      properties:
+        password:
+          type: string
+          minLength: 8
+        reason:
+          type: string
+          minLength: 3
+    CreateAccountAddressRequest:
+      type: object
+      required: [fullName, phone, district, addressLine]
+      properties:
+        label:
+          type: string
+        fullName:
+          type: string
+          minLength: 2
+        phone:
+          type: string
+          minLength: 8
+        province:
+          type: string
+        district:
+          type: string
+          minLength: 2
+        ward:
+          type: string
+        addressLine:
+          type: string
+          minLength: 4
+        country:
+          type: string
+        isDefault:
+          type: boolean
+    UpdateAccountAddressRequest:
+      type: object
+      properties:
+        label:
+          type: string
+        fullName:
+          type: string
+          minLength: 2
+        phone:
+          type: string
+          minLength: 8
+        province:
+          type: string
+        district:
+          type: string
+          minLength: 2
+        ward:
+          type: string
+        addressLine:
+          type: string
+          minLength: 4
+        country:
+          type: string
+        isDefault:
+          type: boolean
     SocialLoginRequest:
       type: object
       required: [providerUserId, email]
