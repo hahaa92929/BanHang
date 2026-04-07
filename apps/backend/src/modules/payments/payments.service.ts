@@ -11,6 +11,7 @@ import { createHmac, timingSafeEqual } from 'node:crypto';
 import { generateId } from '../../common/security';
 import { AppEnv } from '../../config/env';
 import { PrismaService } from '../../infra/prisma/prisma.service';
+import { CreateSavedPaymentMethodDto } from './dto/create-saved-payment-method.dto';
 import { InitiatePaymentDto } from './dto/initiate-payment.dto';
 import { PaymentWebhookDto } from './dto/payment-webhook.dto';
 import { RefundPaymentDto } from './dto/refund-payment.dto';
@@ -66,6 +67,134 @@ export class PaymentsService {
     };
   }
 
+  async listSavedMethods(userId: string) {
+    const data = await this.prisma.savedPaymentMethod.findMany({
+      where: { userId },
+      orderBy: [{ isDefault: 'desc' }, { createdAt: 'desc' }],
+    });
+
+    return {
+      total: data.length,
+      data: data.map((item) => this.toSavedMethodSummary(item)),
+    };
+  }
+
+  async createSavedMethod(userId: string, payload: CreateSavedPaymentMethodDto) {
+    const existingDefault = await this.prisma.savedPaymentMethod.findFirst({
+      where: {
+        userId,
+        isDefault: true,
+      },
+    });
+    const shouldSetDefault = payload.isDefault ?? !existingDefault;
+
+    await this.prisma.$transaction(async (tx) => {
+      if (shouldSetDefault) {
+        await tx.savedPaymentMethod.updateMany({
+          where: { userId },
+          data: { isDefault: false },
+        });
+      }
+
+      await tx.savedPaymentMethod.create({
+        data: {
+          userId,
+          gateway: payload.gateway?.trim() || payload.method,
+          method: payload.method,
+          label: payload.label.trim(),
+          brand: payload.brand?.trim() || null,
+          last4: payload.last4 ?? null,
+          expiryMonth: payload.expiryMonth ?? null,
+          expiryYear: payload.expiryYear ?? null,
+          tokenRef: payload.tokenRef.trim(),
+          providerCustomerRef: payload.providerCustomerRef?.trim() || null,
+          isDefault: shouldSetDefault,
+          metadata: (payload.metadata ?? null) as Prisma.InputJsonValue,
+        },
+      });
+    });
+
+    return this.listSavedMethods(userId);
+  }
+
+  async setDefaultSavedMethod(userId: string, id: string) {
+    return this.prisma.$transaction(async (tx) => {
+      const existing = await tx.savedPaymentMethod.findFirst({
+        where: {
+          id,
+          userId,
+        },
+      });
+
+      if (!existing) {
+        throw new NotFoundException('Saved payment method not found');
+      }
+
+      await tx.savedPaymentMethod.updateMany({
+        where: { userId },
+        data: { isDefault: false },
+      });
+
+      await tx.savedPaymentMethod.update({
+        where: { id },
+        data: { isDefault: true },
+      });
+
+      const data = await tx.savedPaymentMethod.findMany({
+        where: { userId },
+        orderBy: [{ isDefault: 'desc' }, { createdAt: 'desc' }],
+      });
+
+      return {
+        total: data.length,
+        data: data.map((item) => this.toSavedMethodSummary(item)),
+      };
+    });
+  }
+
+  async removeSavedMethod(userId: string, id: string) {
+    return this.prisma.$transaction(async (tx) => {
+      const existing = await tx.savedPaymentMethod.findFirst({
+        where: {
+          id,
+          userId,
+        },
+      });
+
+      if (!existing) {
+        throw new NotFoundException('Saved payment method not found');
+      }
+
+      await tx.savedPaymentMethod.delete({
+        where: { id },
+      });
+
+      if (existing.isDefault) {
+        const fallback = await tx.savedPaymentMethod.findFirst({
+          where: { userId },
+          orderBy: [{ createdAt: 'desc' }],
+        });
+
+        if (fallback) {
+          await tx.savedPaymentMethod.update({
+            where: { id: fallback.id },
+            data: { isDefault: true },
+          });
+        }
+      }
+
+      const data = await tx.savedPaymentMethod.findMany({
+        where: { userId },
+        orderBy: [{ isDefault: 'desc' }, { createdAt: 'desc' }],
+      });
+
+      return {
+        total: data.length,
+        data: data.map((item) => this.toSavedMethodSummary(item)),
+      };
+    });
+  }
+
   async initiate(payload: InitiatePaymentDto) {
     const order = await this.prisma.order.findUnique({
       where: { id: payload.orderId },
@@ -80,11 +209,28 @@ export class PaymentsService {
       throw new NotFoundException('Order not found');
     }
 
-    const method = payload.method ?? order.paymentMethod;
+    const savedMethod = payload.savedPaymentMethodId
+      ? await this.prisma.savedPaymentMethod.findFirst({
+          where: {
+            id: payload.savedPaymentMethodId,
+            userId: order.userId,
+          },
+        })
+      : null;
+
+    if (payload.savedPaymentMethodId && !savedMethod) {
+      throw new NotFoundException('Saved payment method not found');
+    }
+
+    if (savedMethod && payload.method && payload.method !== savedMethod.method) {
+      throw new BadRequestException('Saved payment method does not match requested method');
+    }
+
+    const method = savedMethod?.method ?? payload.method ?? order.paymentMethod;
     if (method === 'vnpay' && !this.vnpayConfig) {
       throw new BadRequestException('VNPay is not configured');
     }
-    const gateway = this.resolveGateway(method);
+    const gateway = savedMethod?.gateway ?? this.resolveGateway(method);
     const transactionId = generateId('txn').toUpperCase();
     const paymentStatus: PaymentStatus = method === 'cod' ? 'pending' : 'authorized';
 
@@ -98,6 +244,8 @@ export class PaymentsService {
             transactionId,
             metadata: {
               initiatedAt: new Date().toISOString(),
+              savedPaymentMethodId: savedMethod?.id ?? null,
+              savedPaymentMethodLabel: savedMethod?.label ?? null,
             },
           },
         })
@@ -112,6 +260,8 @@ export class PaymentsService {
             transactionId,
             metadata: {
               initiatedAt: new Date().toISOString(),
+              savedPaymentMethodId: savedMethod?.id ?? null,
+              savedPaymentMethodLabel: savedMethod?.label ?? null,
             },
           },
         });
@@ -332,6 +482,37 @@ export class PaymentsService {
 
   private resolveGateway(method: PaymentMethod) {
     return method === 'cod' ? 'offline' : method;
+  }
+
+  private toSavedMethodSummary(item: {
+    id: string;
+    gateway: string;
+    method: PaymentMethod;
+    label: string;
+    brand: string | null;
+    last4: string | null;
+    expiryMonth: number | null;
+    expiryYear: number | null;
+    providerCustomerRef: string | null;
+    isDefault: boolean;
+    createdAt: Date;
+    updatedAt: Date;
+  }) {
+    return {
+      id: item.id,
+      gateway: item.gateway,
+      method: item.method,
+      label: item.label,
+      brand: item.brand,
+      last4: item.last4,
+      expiryMonth: item.expiryMonth,
+      expiryYear: item.expiryYear,
+      providerCustomerRef: item.providerCustomerRef,
+      isDefault: item.isDefault,
+      createdAt: item.createdAt,
+      updatedAt: item.updatedAt,
+      maskedDetails: item.last4 ? `•••• ${item.last4}` : item.label,
+    };
   }
 
   private buildRedirectUrl(

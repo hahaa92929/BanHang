@@ -143,6 +143,66 @@ function createProductsMock() {
     reviewId: string;
     createdAt: Date;
   }> = [];
+  const productQuestions = [
+    {
+      id: 'q-1',
+      userId: 'u-reviewer',
+      productId: 'p-1',
+      question: 'May nay co ho tro eSIM khong?',
+      answer: 'Co, may ho tro 1 nano SIM va eSIM.',
+      status: 'published',
+      upvoteCount: 2,
+      answeredAt: new Date('2026-04-02T10:00:00.000Z'),
+      answeredById: 'u-admin',
+      createdAt: new Date('2026-04-02T09:00:00.000Z'),
+      updatedAt: new Date('2026-04-02T10:00:00.000Z'),
+    },
+  ];
+  const productQuestionUpvotes: Array<{
+    id: string;
+    userId: string;
+    questionId: string;
+    createdAt: Date;
+  }> = [];
+  const productPriceHistory = [
+    {
+      id: 'ph-1',
+      productId: 'p-1',
+      price: 21_000_000,
+      previousPrice: null,
+      source: 'seed',
+      changedAt: new Date('2026-03-30T10:00:00.000Z'),
+    },
+    {
+      id: 'ph-2',
+      productId: 'p-1',
+      price: 20_000_000,
+      previousPrice: 21_000_000,
+      source: 'admin_update',
+      changedAt: new Date('2026-04-01T10:00:00.000Z'),
+    },
+  ];
+  const priceAlerts = [
+    {
+      id: 'pa-1',
+      userId: 'u-reviewer',
+      productId: 'p-1',
+      targetPrice: 19_500_000,
+      isActive: true,
+      lastNotifiedPrice: null,
+      createdAt: new Date('2026-04-01T09:00:00.000Z'),
+      updatedAt: new Date('2026-04-01T09:00:00.000Z'),
+    },
+  ];
+  const notifications: Array<{
+    id: string;
+    userId: string;
+    type: string;
+    title: string;
+    content: string;
+    data?: Record<string, unknown>;
+    createdAt: Date;
+  }> = [];
   let lastFindManyArgs: Record<string, unknown> | null = null;
 
   function findUser(userId: string) {
@@ -220,6 +280,72 @@ function createProductsMock() {
 
       if (typeof where.id === 'string' && review.id !== where.id) {
         return false;
+      }
+
+      return true;
+    });
+  }
+
+  function filterQuestions(where?: Record<string, unknown>) {
+    return productQuestions.filter((question) => {
+      if (!where) {
+        return true;
+      }
+
+      if (typeof where.productId === 'string' && question.productId !== where.productId) {
+        return false;
+      }
+
+      if (typeof where.status === 'string' && question.status !== where.status) {
+        return false;
+      }
+
+      if (typeof where.id === 'string' && question.id !== where.id) {
+        return false;
+      }
+
+      if (where.answer && typeof where.answer === 'object') {
+        if ('not' in where.answer && (where.answer as { not?: null }).not === null && question.answer === null) {
+          return false;
+        }
+      }
+
+      if (where.answer === null && question.answer !== null) {
+        return false;
+      }
+
+      if (where.OR && Array.isArray(where.OR)) {
+        const matched = where.OR.some((clause) => {
+          if (
+            clause &&
+            typeof clause === 'object' &&
+            'question' in clause &&
+            clause.question &&
+            typeof clause.question === 'object' &&
+            'contains' in clause.question &&
+            typeof clause.question.contains === 'string'
+          ) {
+            return question.question.toLowerCase().includes(clause.question.contains.toLowerCase());
+          }
+
+          if (
+            clause &&
+            typeof clause === 'object' &&
+            'answer' in clause &&
+            clause.answer &&
+            typeof clause.answer === 'object' &&
+            'contains' in clause.answer &&
+            typeof clause.answer.contains === 'string'
+          ) {
+            return (question.answer ?? '').toLowerCase().includes(clause.answer.contains.toLowerCase());
+          }
+
+          return false;
+        });
+
+        if (!matched) {
+          return false;
+        }
       }
 
       return true;
@@ -523,6 +649,300 @@ function createProductsMock() {
         return vote;
       },
     },
+    productQuestion: {
+      count: async (args?: { where?: Record<string, unknown> }) => filterQuestions(args?.where).length,
+      findMany: async (args?: {
+        where?: Record<string, unknown>;
+        include?: Record<string, unknown>;
+        orderBy?: Array<Record<string, 'asc' | 'desc'>>;
+        skip?: number;
+        take?: number;
+      }) => {
+        let rows = filterQuestions(args?.where).map((question) => ({
+          ...question,
+          user: {
+            id: findUser(question.userId).id,
+            fullName: findUser(question.userId).fullName,
+          },
+          answeredBy: question.answeredById
+            ? {
+                id: findUser(question.answeredById).id,
+                fullName: findUser(question.answeredById).fullName,
+              }
+            : null,
+        }));
+
+        const orderBy = args?.orderBy ?? [];
+        rows.sort((left, right) => {
+          for (const order of orderBy) {
+            if (order.upvoteCount) {
+              const diff =
+                order.upvoteCount === 'asc'
+                  ? left.upvoteCount - right.upvoteCount
+                  : right.upvoteCount - left.upvoteCount;
+              if (diff !== 0) {
+                return diff;
+              }
+            }
+            if (order.answeredAt) {
+              const leftValue = (left.answeredAt ?? left.createdAt).getTime();
+              const rightValue = (right.answeredAt ?? right.createdAt).getTime();
+              const diff =
+                order.answeredAt === 'asc' ? leftValue - rightValue : rightValue - leftValue;
+              if (diff !== 0) {
+                return diff;
+              }
+            }
+            if (order.createdAt) {
+              const diff =
+                order.createdAt === 'asc'
+                  ? left.createdAt.getTime() - right.createdAt.getTime()
+                  : right.createdAt.getTime() - left.createdAt.getTime();
+              if (diff !== 0) {
+                return diff;
+              }
+            }
+          }
+          return 0;
+        });
+
+        if (args?.skip) {
+          rows = rows.slice(args.skip);
+        }
+        if (args?.take) {
+          rows = rows.slice(0, args.take);
+        }
+
+        return rows;
+      },
+      create: async (args: {
+        data: Record<string, unknown>;
+        include?: { user?: { select: { id: true; fullName: true } }; answeredBy?: { select: { id: true; fullName: true } } };
+      }) => {
+        const question = {
+          id: `q-${productQuestions.length + 1}`,
+          answer: null,
+          status: 'published',
+          upvoteCount: 0,
+          answeredAt: null,
+          answeredById: null,
+          createdAt: new Date(),
+          updatedAt: new Date(),
+          ...args.data,
+        };
+        productQuestions.push(question as never);
+        return {
+          ...question,
+          user: args.include?.user ? findUser(question.userId as string) : undefined,
+          answeredBy:
+            args.include?.answeredBy && question.answeredById ? findUser(question.answeredById as string) : null,
+        };
+      },
+      findFirst: async (args: { where: Record<string, unknown>; select?: Record<string, boolean> }) => {
+        const question =
+          filterQuestions({
+            id: args.where.id,
+            productId: args.where.productId,
+            status: args.where.status,
+          })[0] ?? null;
+
+        if (!question) {
+          return null;
+        }
+
+        if (args.select) {
+          return Object.fromEntries(
+            Object.entries(args.select)
+              .filter(([, value]) => Boolean(value))
+              .map(([key]) => [key, (question as Record<string, unknown>)[key]]),
+          );
+        }
+
+        return question;
+      },
+      update: async (args: {
+        where: { id: string };
+        data: Record<string, unknown>;
+        select?: Record<string, boolean>;
+        include?: { user?: { select: { id: true; fullName: true } }; answeredBy?: { select: { id: true; fullName: true } } };
+      }) => {
+        const question = productQuestions.find((item) => item.id === args.where.id);
+        if (!question) {
+          throw new Error('question not found');
+        }
+        const nextData = { ...args.data };
+        delete nextData.upvoteCount;
+        Object.assign(question, nextData, { updatedAt: new Date() });
+        if (
+          args.data.upvoteCount &&
+          typeof args.data.upvoteCount === 'object' &&
+          'increment' in args.data.upvoteCount
+        ) {
+          question.upvoteCount += Number((args.data.upvoteCount as { increment: number }).increment);
+        }
+        if (args.select) {
+          return Object.fromEntries(
+            Object.entries(args.select)
+              .filter(([, value]) => Boolean(value))
+              .map(([key]) => [key, (question as Record<string, unknown>)[key]]),
+          );
+        }
+        return {
+          ...question,
+          user: args.include?.user ? findUser(question.userId) : undefined,
+          answeredBy:
+            args.include?.answeredBy && question.answeredById ? findUser(question.answeredById) : null,
+        };
+      },
+    },
+    productQuestionUpvote: {
+      findUnique: async (args: { where: { userId_questionId: { userId: string; questionId: string } } }) =>
+        productQuestionUpvotes.find(
+          (vote) =>
+            vote.userId === args.where.userId_questionId.userId &&
+            vote.questionId === args.where.userId_questionId.questionId,
+        ) ?? null,
+      create: async (args: { data: { userId: string; questionId: string } }) => {
+        const vote = {
+          id: `pqu-${productQuestionUpvotes.length + 1}`,
+          createdAt: new Date(),
+          ...args.data,
+        };
+        productQuestionUpvotes.push(vote);
+        return vote;
+      },
+    },
+    productPriceHistory: {
+      findMany: async (args?: {
+        where?: { productId?: string; changedAt?: { gte: Date } };
+        orderBy?: { changedAt: 'asc' | 'desc' };
+        take?: number;
+      }) => {
+        let rows = [...productPriceHistory];
+        if (args?.where?.productId) {
+          rows = rows.filter((item) => item.productId === args.where.productId);
+        }
+        if (args?.where?.changedAt?.gte) {
+          rows = rows.filter((item) => item.changedAt >= args.where!.changedAt!.gte);
+        }
+        rows.sort((left, right) =>
+          args?.orderBy?.changedAt === 'asc'
+            ? left.changedAt.getTime() - right.changedAt.getTime()
+            : right.changedAt.getTime() - left.changedAt.getTime(),
+        );
+        if (args?.take) {
+          rows = rows.slice(0, args.take);
+        }
+        return rows;
+      },
+      create: async (args: { data: Record<string, unknown> }) => {
+        const row = {
+          id: `ph-${productPriceHistory.length + 1}`,
+          changedAt: new Date(),
+          previousPrice: null,
+          source: null,
+          ...args.data,
+        };
+        productPriceHistory.push(row as never);
+        return row;
+      },
+    },
+    priceAlert: {
+      findMany: async (args?: {
+        where?: {
+          productId?: string;
+          isActive?: boolean;
+        };
+        select?: Record<string, boolean>;
+      }) => {
+        let rows = [...priceAlerts];
+        if (args?.where?.productId) {
+          rows = rows.filter((item) => item.productId === args.where.productId);
+        }
+        if (typeof args?.where?.isActive === 'boolean') {
+          rows = rows.filter((item) => item.isActive === args.where.isActive);
+        }
+        if (args?.select) {
+          return rows.map((row) =>
+            Object.fromEntries(
+              Object.entries(args.select!)
+                .filter(([, value]) => Boolean(value))
+                .map(([key]) => [key, (row as Record<string, unknown>)[key]]),
+            ),
+          );
+        }
+        return rows;
+      },
+      upsert: async (args: {
+        where: { userId_productId: { userId: string; productId: string } };
+        create: Record<string, unknown>;
+        update: Record<string, unknown>;
+        select?: Record<string, boolean>;
+      }) => {
+        let row =
+          priceAlerts.find(
+            (item) =>
+              item.userId === args.where.userId_productId.userId &&
+              item.productId === args.where.userId_productId.productId,
+          ) ?? null;
+        if (!row) {
+          row = {
+            id: `pa-${priceAlerts.length + 1}`,
+            createdAt: new Date(),
+            updatedAt: new Date(),
+            targetPrice: null,
+            isActive: true,
+            lastNotifiedPrice: null,
+            ...args.create,
+          } as (typeof priceAlerts)[number];
+          priceAlerts.push(row);
+        } else {
+          Object.assign(row, args.update, { updatedAt: new Date() });
+        }
+        if (!args.select) {
+          return row;
+        }
+        return Object.fromEntries(
+          Object.entries(args.select)
+            .filter(([, value]) => Boolean(value))
+            .map(([key]) => [key, (row as Record<string, unknown>)[key]]),
+        );
+      },
+      updateMany: async (args: { where: Record<string, unknown>; data: Record<string, unknown> }) => {
+        let count = 0;
+        for (const alert of priceAlerts) {
+          if (typeof args.where.userId === 'string' && alert.userId !== args.where.userId) {
+            continue;
+          }
+          if (typeof args.where.productId === 'string' && alert.productId !== args.where.productId) {
+            continue;
+          }
+          if (
+            args.where.id &&
+            typeof args.where.id === 'object' &&
+            'in' in args.where.id &&
+            Array.isArray(args.where.id.in) &&
+            !args.where.id.in.includes(alert.id)
+          ) {
+            continue;
+          }
+          Object.assign(alert, args.data, { updatedAt: new Date() });
+          count += 1;
+        }
+        return { count };
+      },
+    },
+    notification: {
+      create: async (args: { data: Record<string, unknown> }) => {
+        const row = {
+          id: `n-${notifications.length + 1}`,
+          createdAt: new Date(),
+          ...args.data,
+        } as (typeof notifications)[number];
+        notifications.push(row);
+        return row;
+      },
+    },
     order: {
       count: async (args?: { where?: { userId?: string } }) => (args?.where?.userId === 'u-pending' ? 0 : 1),
     },
@@ -538,6 +958,11 @@ function createProductsMock() {
     getLastFindManyArgs: () => lastFindManyArgs,
     reviews,
     reviewHelpfulVotes,
+    productQuestions,
+    productQuestionUpvotes,
+    productPriceHistory,
+    priceAlerts,
+    notifications,
     products,
     variants,
     inventoryLevels,
@@ -565,7 +990,7 @@ test('products.findAll returns catalog data with categories and brands', async (
 });
 
 test('products.createProduct resolves category and brand slugs', async () => {
-  const { prisma } = createProductsMock();
+  const { prisma, productPriceHistory } = createProductsMock();
   const service = new ProductsService(prisma as never);
 
   const created = await service.createProduct({
@@ -601,6 +1026,8 @@ test('products.createProduct resolves category and brand slugs', async () => {
   assert.equal(created.price, 33_000_000);
   assert.equal(created.variants[0].isDefault, true);
   assert.equal(created.variants[0].inventoryLevels[0].warehouse.code, 'HCM');
+  assert.equal(productPriceHistory.at(-1)?.price, 33_000_000);
+  assert.equal(productPriceHistory.at(-1)?.source, 'create');
 });
 
 test('products.findOne throws NotFoundException for missing product', async () => {
@@ -690,6 +1117,49 @@ test('products.update archive import export and addMedia cover admin catalog wor
   assert.match(exported.content, /id,sku,slug,name,status,price,stock,category,brand,featured/);
   assert.equal(media.productId, 'p-1');
   assert.equal(media.type, 'image');
+});
+
+test('products.priceHistory and price alerts track drops and notify subscribed users', async () => {
+  const { prisma, productPriceHistory, notifications, priceAlerts } = createProductsMock();
+  const service = new ProductsService(prisma as never);
+
+  const before = await service.listPriceHistory('iphone-15', {
+    days: 30,
+    limit: 10,
+  });
+  const alert = await service.setPriceAlert('u-admin', 'iphone-15', {
+    targetPrice: 19_000_000,
+  });
+  const updated = await service.updateProduct('p-1', {
+    price: 19_000_000,
+    variants: [
+      {
+        sku: 'SKU-1-BLACK',
+        name: 'Black 128GB',
+        isDefault: true,
+        price: 19_000_000,
+        warehouseStocks: [{ warehouseCode: 'MAIN', quantity: 10 }],
+      },
+    ],
+  });
+  const after = await service.listPriceHistory('iphone-15', {
+    limit: 10,
+  });
+  const removed = await service.removePriceAlert('u-admin', 'iphone-15');
+
+  assert.equal(before.totalChanges, 2);
+  assert.equal(before.lowestPrice, 20_000_000);
+  assert.equal(alert.alert.targetPrice, 19_000_000);
+  assert.equal(updated.price, 19_000_000);
+  assert.equal(after.currentPrice, 19_000_000);
+  assert.equal(after.totalChanges, 3);
+  assert.equal(after.data[0]?.previousPrice, 20_000_000);
+  assert.equal(productPriceHistory.at(-1)?.price, 19_000_000);
+  assert.equal(notifications.length, 2);
+  assert.equal(priceAlerts.find((item) => item.userId === 'u-reviewer')?.lastNotifiedPrice, 19_000_000);
+  assert.equal(priceAlerts.find((item) => item.userId === 'u-admin')?.lastNotifiedPrice, 19_000_000);
+  assert.deepEqual(removed, { success: true, productId: 'p-1' });
+  assert.equal(priceAlerts.find((item) => item.userId === 'u-admin')?.isActive, false);
 });
 
 test('products reject invalid category brand and missing product references', async () => {
@@ -933,6 +1403,80 @@ test('products.review workflows reject duplicates and missing references', async
 
   await assert.rejects(
     async () => service.markReviewHelpful('u-reviewer', 'iphone-15', 'missing-review'),
+    (error: unknown) => error instanceof NotFoundException,
+  );
+
+  await assert.rejects(
+    async () => service.setPriceAlert('u-reviewer', 'missing-product', { targetPrice: 1 }),
+    (error: unknown) => error instanceof NotFoundException,
+  );
+});
+
+test('products.questions list create upvote and answer cover product q-and-a flows', async () => {
+  const { prisma, productQuestions, productQuestionUpvotes } = createProductsMock();
+  const service = new ProductsService(prisma as never);
+
+  const before = await service.listQuestions('iphone-15', {
+    sort: 'helpful',
+    page: 1,
+    limit: 10,
+  });
+  const created = await service.createQuestion('u-pending', 'iphone-15', {
+    question: 'May nay co khang nuoc de di mua ben ngoai khong?',
+  });
+  const upvoted = await service.upvoteQuestion('u-admin', 'iphone-15', created.id);
+  const upvotedAgain = await service.upvoteQuestion('u-admin', 'iphone-15', created.id);
+  const answered = await service.answerQuestion(
+    'u-admin',
+    'iphone-15',
+    created.id,
+    'Co, may dat chuan IP68 cho nhu cau dung hang ngay.',
+  );
+  const after = await service.listQuestions('iphone-15', {
+    q: 'ip68',
+    answeredOnly: true,
+    sort: 'answered',
+    page: 1,
+    limit: 10,
+  });
+
+  assert.equal(before.total, 1);
+  assert.equal(before.summary.answeredCount, 1);
+  assert.equal(created.answer, null);
+  assert.equal(created.status, 'published');
+  assert.equal(upvoted.applied, true);
+  assert.equal(upvoted.upvoteCount, 1);
+  assert.equal(upvotedAgain.applied, false);
+  assert.equal(answered.answer, 'Co, may dat chuan IP68 cho nhu cau dung hang ngay.');
+  assert.equal(answered.answeredBy?.id, 'u-admin');
+  assert.equal(productQuestions.length, 2);
+  assert.equal(productQuestionUpvotes.length, 1);
+  assert.equal(after.total, 1);
+  assert.equal(after.data[0]?.id, created.id);
+  assert.equal(after.summary.answeredCount, 2);
+});
+
+test('products.question workflows reject self-upvote and missing references', async () => {
+  const { prisma } = createProductsMock();
+  const service = new ProductsService(prisma as never);
+
+  await assert.rejects(
+    async () => service.upvoteQuestion('u-reviewer', 'iphone-15', 'q-1'),
+    (error: unknown) => error instanceof BadRequestException,
+  );
+
+  await assert.rejects(
+    async () => service.upvoteQuestion('u-admin', 'iphone-15', 'missing-question'),
+    (error: unknown) => error instanceof NotFoundException,
+  );
+
+  await assert.rejects(
+    async () => service.answerQuestion('u-admin', 'iphone-15', 'missing-question', 'Reply'),
+    (error: unknown) => error instanceof NotFoundException,
+  );
+
+  await assert.rejects(
+    async () => service.listQuestions('missing-product', {}),
     (error: unknown) => error instanceof NotFoundException,
   );
 });

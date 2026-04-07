@@ -69,6 +69,7 @@ export class AuthController {
         userAgent: request.headers['user-agent'],
       },
       body.guestAccessToken,
+      body.referralCode,
     );
 
     this.setAuthCookies(response, request, auth.refreshToken, auth.csrfToken);
@@ -91,6 +92,7 @@ export class AuthController {
         userAgent: request.headers['user-agent'],
       },
       body.guestAccessToken,
+      body.referralCode,
     );
 
     this.setAuthCookies(response, request, auth.refreshToken, auth.csrfToken);

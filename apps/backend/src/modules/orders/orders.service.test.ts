@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { BadRequestException, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ForbiddenException, NotFoundException } from '@nestjs/common';
 import { OrdersService } from './orders.service';
 
 type ProductRecord = {
@@ -119,6 +119,15 @@ type OrderEventRecord = {
   actorId: string;
   createdAt: Date;
 };
+type OrderNoteRecord = {
+  id: string;
+  orderId: string;
+  authorId: string;
+  visibility: 'internal' | 'customer';
+  content: string;
+  createdAt: Date;
+  updatedAt: Date;
+};
 type PaymentRecord = {
   id: string;
   orderId: string;
@@ -134,8 +143,42 @@ type PaymentRecord = {
   updatedAt: Date;
 };
 
+type ReferralEventRecord = {
+  id: string;
+  referrerId: string;
+  referredUserId: string;
+  referralCode: string;
+  status: 'signed_up' | 'qualified' | 'rewarded';
+  rewardPoints: number;
+  qualifiedOrderId: string | null;
+  qualifiedAt: Date | null;
+  rewardGrantedAt: Date | null;
+  createdAt: Date;
+  updatedAt: Date;
+};
+
 function createOrdersMock() {
   const state = {
+    users: new Map([
+      [
+        'u-1',
+        {
+          id: 'u-1',
+          email: 'customer@banhang.local',
+          fullName: 'Customer Demo',
+          role: 'customer',
+        },
+      ],
+      [
+        'u-admin',
+        {
+          id: 'u-admin',
+          email: 'admin@banhang.local',
+          fullName: 'Admin Demo',
+          role: 'admin',
+        },
+      ],
+    ]),
     products: new Map<string, ProductRecord>([
       [
         'p-1',
@@ -196,7 +239,9 @@ function createOrdersMock() {
     orders: new Map<string, OrderRecord>(),
     orderItems: [] as OrderItemRecord[],
     orderEvents: [] as OrderEventRecord[],
+    orderNotes: [] as OrderNoteRecord[],
     payments: [] as PaymentRecord[],
+    referralEvents: [] as ReferralEventRecord[],
     notifications: [] as Array<Record<string, unknown>>,
     inventoryMovements: [] as Array<Record<string, unknown>>,
     seq: 1,
@@ -551,6 +596,38 @@ function createOrdersMock() {
         return args.data;
       },
     },
+    referralEvent: {
+      findFirst: async (args: {
+        where: { referredUserId: string; status: ReferralEventRecord['status'] };
+        orderBy?: { createdAt: 'asc' | 'desc' };
+      }) => {
+        const rows = state.referralEvents
+          .filter(
+            (item) =>
+              item.referredUserId === args.where.referredUserId &&
+              item.status === args.where.status,
+          )
+          .sort((left, right) =>
+            args.orderBy?.createdAt === 'desc'
+              ? right.createdAt.getTime() - left.createdAt.getTime()
+              : left.createdAt.getTime() - right.createdAt.getTime(),
+          );
+        return rows[0] ?? null;
+      },
+      update: async (args: { where: { id: string }; data: Partial<ReferralEventRecord> }) => {
+        const index = state.referralEvents.findIndex((item) => item.id === args.where.id);
+        if (index === -1) {
+          throw new Error('referral event not found');
+        }
+        const updated = {
+          ...state.referralEvents[index],
+          ...args.data,
+          updatedAt: new Date(),
+        };
+        state.referralEvents[index] = updated;
+        return updated;
+      },
+    },
   };
 
   const prisma = {
@@ -559,6 +636,56 @@ function createOrdersMock() {
       count: tx.order.count,
       findMany: tx.order.findMany,
       findUnique: tx.order.findUnique,
+    },
+    orderNote: {
+      count: async (args: { where: { orderId: string; visibility?: 'internal' | 'customer' } }) =>
+        state.orderNotes.filter(
+          (note) =>
+            note.orderId === args.where.orderId &&
+            (!args.where.visibility || note.visibility === args.where.visibility),
+        ).length,
+      findMany: async (args: {
+        where: { orderId: string; visibility?: 'internal' | 'customer' };
+        include?: { author?: { select: Record<string, boolean> } };
+      }) =>
+        state.orderNotes
+          .filter(
+            (note) =>
+              note.orderId === args.where.orderId &&
+              (!args.where.visibility || note.visibility === args.where.visibility),
+          )
+          .sort((left, right) => left.createdAt.getTime() - right.createdAt.getTime())
+          .map((note) => ({
+            ...note,
+            author: args.include?.author ? state.users.get(note.authorId) ?? null : undefined,
+          })),
+      create: async (args: {
+        data: {
+          orderId: string;
+          authorId: string;
+          visibility: 'internal' | 'customer';
+          content: string;
+        };
+        include?: { author?: { select: Record<string, boolean> } };
+      }) => {
+        const note: OrderNoteRecord = {
+          id: `on-${state.seq++}`,
+          createdAt: new Date(),
+          updatedAt: new Date(),
+          ...args.data,
+        };
+        state.orderNotes.push(note);
+        return {
+          ...note,
+          author: args.include?.author ? state.users.get(note.authorId) ?? null : undefined,
+        };
+      },
+    },
+    notification: {
+      create: async (args: { data: Record<string, unknown> }) => {
+        state.notifications.push(args.data);
+        return args.data;
+      },
     },
   };
 
@@ -656,6 +783,41 @@ test('orders.updateStatus follows 4-step flow and marks COD paid at completion',
   assert.equal(completed?.paymentStatus, 'paid');
 });
 
+test('orders.updateStatus rewards eligible referrals on first completed order', async () => {
+  const mock = createOrdersMock();
+  mock.state.referralEvents.push({
+    id: 'ref-1',
+    referrerId: 'u-ref',
+    referredUserId: 'u-1',
+    referralCode: 'REF123',
+    status: 'signed_up',
+    rewardPoints: 150,
+    qualifiedOrderId: null,
+    qualifiedAt: null,
+    rewardGrantedAt: null,
+    createdAt: new Date('2026-01-01T00:00:00.000Z'),
+    updatedAt: new Date('2026-01-01T00:00:00.000Z'),
+  });
+  mock.addCart('u-1', 'p-1', 1);
+  const service = new OrdersService(mock.prisma as never);
+
+  const reservation = await service.createReservationFromCart('u-1');
+  const order = await service.checkout('u-1', checkoutPayload(reservation.id));
+
+  await service.updateStatus(order!.id, 'confirmed', 'u-admin');
+  await service.updateStatus(order!.id, 'shipping', 'u-admin');
+  await service.updateStatus(order!.id, 'completed', 'u-admin');
+
+  assert.equal(mock.state.referralEvents[0]?.status, 'rewarded');
+  assert.equal(mock.state.referralEvents[0]?.qualifiedOrderId, order!.id);
+  assert.equal(
+    mock.state.notifications.some(
+      (item) => item.userId === 'u-ref' && item.title === 'Referral reward earned',
+    ),
+    true,
+  );
+});
+
 test('orders.reservation lifecycle APIs return summaries and release expired stock', async () => {
   const mock = createOrdersMock();
   mock.addCart('u-1', 'p-1', 2);
@@ -707,6 +869,52 @@ test('orders.list detail tracking invoice and return request cover customer life
   assert.equal(invoice.items.length, 1);
   assert.equal(invoice.items[0].variantName, 'Black 128GB');
   assert.equal(returned?.status, 'returned');
+});
+
+test('orders.notes keep internal notes hidden from customers and allow admin annotations', async () => {
+  const mock = createOrdersMock();
+  mock.addCart('u-1', 'p-1', 1);
+  const service = new OrdersService(mock.prisma as never);
+
+  const reservation = await service.createReservationFromCart('u-1');
+  const order = await service.checkout('u-1', checkoutPayload(reservation.id));
+
+  const internal = await service.addNote(order!.id, 'u-admin', 'admin', {
+    visibility: 'internal',
+    content: 'Fraud review completed and approved.',
+  });
+  const customerFacing = await service.addNote(order!.id, 'u-admin', 'admin', {
+    visibility: 'customer',
+    content: 'Warehouse is preparing your order for pickup.',
+  });
+  const customerReply = await service.addNote(order!.id, 'u-1', 'customer', {
+    content: 'Please call before delivery.',
+  });
+
+  const adminView = await service.listNotes(order!.id, 'u-admin', 'admin');
+  const customerView = await service.listNotes(order!.id, 'u-1', 'customer');
+
+  assert.equal(internal.visibility, 'internal');
+  assert.equal(customerFacing.visibility, 'customer');
+  assert.equal(customerReply.visibility, 'customer');
+  assert.equal(adminView.total, 3);
+  assert.equal(customerView.total, 2);
+  assert.equal(customerView.data.some((note) => note.visibility === 'internal'), false);
+  assert.equal(
+    mock.state.notifications.some(
+      (item) => item.userId === 'u-1' && item.title === 'Order note updated',
+    ),
+    true,
+  );
+
+  await assert.rejects(
+    async () =>
+      service.addNote(order!.id, 'u-1', 'customer', {
+        visibility: 'internal',
+        content: 'This should not be allowed.',
+      }),
+    (error: unknown) => error instanceof ForbiddenException,
+  );
 });
 
 test('orders.private helpers resolve addresses and coupon discounts across edge cases', async () => {

@@ -17,6 +17,10 @@ export class InitiatePaymentDto {
 
   @IsOptional()
   @IsString()
+  savedPaymentMethodId?: string;
+
+  @IsOptional()
+  @IsString()
   returnUrl?: string;
 
   @IsOptional()

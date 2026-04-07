@@ -177,6 +177,7 @@ async function createWorkflowMock() {
     orderEvents: [] as any[],
     payments: new Map<string, any>(),
     paymentEvents: new Map<string, any>(),
+    referralEvents: [] as any[],
     notifications: [] as any[],
     movements: [] as any[],
     seq: 1,
@@ -250,8 +251,14 @@ async function createWorkflowMock() {
 
   const tx = {
     user: {
-      findUnique: async ({ where }: { where: { email?: string; id?: string } }) =>
-        where.id ? state.users.get(where.id) ?? null : where.email ? userByEmail(where.email) : null,
+      findUnique: async ({ where }: { where: { email?: string; id?: string; referralCode?: string } }) =>
+        where.id
+          ? state.users.get(where.id) ?? null
+          : where.email
+            ? userByEmail(where.email)
+            : where.referralCode
+              ? [...state.users.values()].find((user) => user.referralCode === where.referralCode) ?? null
+              : null,
       create: async ({ data }: { data: any }) => {
         const user = {
           id: `u-${state.seq++}`,
@@ -796,12 +803,42 @@ async function createWorkflowMock() {
         return data;
       },
     },
+    referralEvent: {
+      findFirst: async ({ where }: { where: { referredUserId: string; status: string } }) =>
+        state.referralEvents.find(
+          (item) => item.referredUserId === where.referredUserId && item.status === where.status,
+        ) ?? null,
+      update: async ({ where, data }: { where: { id: string }; data: any }) => {
+        const index = state.referralEvents.findIndex((item) => item.id === where.id);
+        if (index === -1) {
+          throw new Error('referral event not found');
+        }
+        state.referralEvents[index] = {
+          ...state.referralEvents[index],
+          ...data,
+          updatedAt: new Date(),
+        };
+        return state.referralEvents[index];
+      },
+    },
   };
 
   const prisma = {
     user: {
-      findUnique: async ({ where, select }: { where: { email?: string; id?: string }; select?: { id: true } }) => {
-        const user = where.id ? state.users.get(where.id) ?? null : where.email ? userByEmail(where.email) : null;
+      findUnique: async ({
+        where,
+        select,
+      }: {
+        where: { email?: string; id?: string; referralCode?: string };
+        select?: { id: true };
+      }) => {
+        const user = where.id
+          ? state.users.get(where.id) ?? null
+          : where.email
+            ? userByEmail(where.email)
+            : where.referralCode
+              ? [...state.users.values()].find((item) => item.referralCode === where.referralCode) ?? null
+              : null;
         if (!user) {
           return null;
         }

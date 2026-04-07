@@ -5,6 +5,7 @@ import { AccountService } from './account.service';
 import { CreateAddressDto } from './dto/create-address.dto';
 import { DeleteAccountDto } from './dto/delete-account.dto';
 import { QueryAccountOrdersDto } from './dto/query-account-orders.dto';
+import { RedeemLoyaltyDto } from './dto/redeem-loyalty.dto';
 import { UpdateAddressDto } from './dto/update-address.dto';
 import { UpdateProfileDto } from './dto/update-profile.dto';
 
@@ -31,6 +32,21 @@ export class AccountController {
   @Get('loyalty')
   loyalty(@Req() request: RequestWithUser) {
     return this.accountService.loyalty(request.user!.sub);
+  }
+
+  @Post('loyalty/redeem')
+  redeemLoyalty(@Req() request: RequestWithUser, @Body() body: RedeemLoyaltyDto) {
+    return this.accountService.redeemLoyalty(request.user!.sub, body);
+  }
+
+  @Get('referral')
+  referral(@Req() request: RequestWithUser) {
+    return this.accountService.referral(request.user!.sub);
+  }
+
+  @Post('referral/regenerate')
+  regenerateReferralCode(@Req() request: RequestWithUser) {
+    return this.accountService.regenerateReferralCode(request.user!.sub);
   }
 
   @Get('profile')

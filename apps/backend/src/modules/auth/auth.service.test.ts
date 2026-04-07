@@ -18,6 +18,8 @@ type UserRecord = {
   fullName: string;
   phone?: string | null;
   role: UserRole;
+  referralCode?: string | null;
+  referredById?: string | null;
   emailVerifiedAt: Date | null;
   twoFactorSecret?: string | null;
   twoFactorEnabledAt?: Date | null;
@@ -120,6 +122,7 @@ type NotificationRecord = {
   title: string;
   type?: string;
   content?: string;
+  data?: Record<string, unknown> | null;
 };
 
 type OrderRecord = {
@@ -132,6 +135,20 @@ type ReservationRecord = {
   id: string;
   userId: string;
   status: 'active' | 'consumed' | 'canceled' | 'expired';
+};
+
+type ReferralEventRecord = {
+  id: string;
+  referrerId: string;
+  referredUserId: string;
+  referralCode: string;
+  status: 'signed_up' | 'qualified' | 'rewarded';
+  rewardPoints: number;
+  qualifiedOrderId: string | null;
+  qualifiedAt: Date | null;
+  rewardGrantedAt: Date | null;
+  createdAt: Date;
+  updatedAt: Date;
 };
 
 function createAuthMock() {
@@ -157,11 +174,14 @@ function createAuthMock() {
   const notifications = new Map<string, NotificationRecord>();
   const orders = new Map<string, OrderRecord>();
   const reservations = new Map<string, ReservationRecord>();
+  const referralEvents = new Map<string, ReferralEventRecord>();
   let sequence = 1;
 
   function addUser(user: Partial<UserRecord> & Pick<UserRecord, 'id' | 'email' | 'passwordHash' | 'fullName' | 'role'>) {
     const record: UserRecord = {
       phone: user.phone ?? null,
+      referralCode: user.referralCode ?? null,
+      referredById: user.referredById ?? null,
       emailVerifiedAt: user.emailVerifiedAt ?? null,
       twoFactorSecret: user.twoFactorSecret ?? null,
       twoFactorEnabledAt: user.twoFactorEnabledAt ?? null,
@@ -180,13 +200,17 @@ function createAuthMock() {
 
   const tx = {
     user: {
-      findUnique: async (args: { where: { email?: string; id?: string } }) => {
+      findUnique: async (args: { where: { email?: string; id?: string; referralCode?: string } }) => {
         if (args.where.id) {
           return users.get(args.where.id) ?? null;
         }
 
         if (args.where.email) {
           return usersByEmail.get(args.where.email) ?? null;
+        }
+
+        if (args.where.referralCode) {
+          return [...users.values()].find((user) => user.referralCode === args.where.referralCode) ?? null;
         }
 
         return null;
@@ -198,6 +222,8 @@ function createAuthMock() {
           fullName: string;
           phone?: string | null;
           role: UserRole;
+          referralCode?: string | null;
+          referredById?: string | null;
           emailVerifiedAt?: Date | null;
         };
       }) => {
@@ -208,6 +234,8 @@ function createAuthMock() {
           fullName: args.data.fullName,
           phone: args.data.phone ?? null,
           role: args.data.role,
+          referralCode: args.data.referralCode ?? null,
+          referredById: args.data.referredById ?? null,
           emailVerifiedAt: args.data.emailVerifiedAt ?? null,
         });
         return user;
@@ -222,7 +250,15 @@ function createAuthMock() {
       },
     },
     notification: {
-      create: async (args: { data: { userId: string; title: string; type?: string; content?: string } }) => {
+      create: async (args: {
+        data: {
+          userId: string;
+          title: string;
+          type?: string;
+          content?: string;
+          data?: Record<string, unknown> | null;
+        };
+      }) => {
         const record: NotificationRecord = {
           id: `n-${sequence++}`,
           ...args.data,
@@ -242,6 +278,31 @@ function createAuthMock() {
         }
 
         return { count };
+      },
+    },
+    referralEvent: {
+      create: async (args: {
+        data: {
+          referrerId: string;
+          referredUserId: string;
+          referralCode: string;
+          status?: ReferralEventRecord['status'];
+          rewardPoints?: number;
+        };
+      }) => {
+        const record: ReferralEventRecord = {
+          id: `ref-${sequence++}`,
+          status: args.data.status ?? 'signed_up',
+          rewardPoints: args.data.rewardPoints ?? 100,
+          qualifiedOrderId: null,
+          qualifiedAt: null,
+          rewardGrantedAt: null,
+          createdAt: new Date(),
+          updatedAt: new Date(),
+          ...args.data,
+        };
+        referralEvents.set(record.id, record);
+        return record;
       },
     },
     socialAccount: {
@@ -562,11 +623,16 @@ function createAuthMock() {
 
   const prisma = {
     user: {
-      findUnique: async (args: { where: { email?: string; id?: string }; select?: { id: true } }) => {
+      findUnique: async (args: {
+        where: { email?: string; id?: string; referralCode?: string };
+        select?: { id: true };
+      }) => {
         const user = args.where.id
           ? users.get(args.where.id) ?? null
           : args.where.email
             ? usersByEmail.get(args.where.email) ?? null
+            : args.where.referralCode
+              ? [...users.values()].find((item) => item.referralCode === args.where.referralCode) ?? null
             : null;
 
         if (!user) return null;
@@ -586,6 +652,7 @@ function createAuthMock() {
     notification: tx.notification,
     order: tx.order,
     inventoryReservation: tx.inventoryReservation,
+    referralEvent: tx.referralEvent,
     apiKey: {
       findMany: async (args: { where: { userId: string }; orderBy?: { createdAt: 'desc' | 'asc' } }) =>
         [...apiKeys.values()]
@@ -664,6 +731,7 @@ function createAuthMock() {
     notifications,
     orders,
     reservations,
+    referralEvents,
     addUser,
   };
 }
@@ -684,6 +752,52 @@ test('auth.register creates hashed customer account and returns verification deb
   assert.notEqual(storedUser?.passwordHash, 'hello1234');
   assert.equal(mock.sessions.size, 1);
   assert.equal(mock.emailVerificationTokens.size, 1);
+  assert.ok(storedUser?.referralCode);
+});
+
+test('auth.register and socialLogin attach referral signup to new accounts', async () => {
+  const mock = createAuthMock();
+  mock.addUser({
+    id: 'u-ref',
+    email: 'referrer@example.com',
+    passwordHash: await hashPassword('hello1234'),
+    fullName: 'Referrer User',
+    role: 'customer',
+    referralCode: 'REF999',
+  });
+  const service = new AuthService(mock.prisma as never);
+
+  const registered = await service.register(
+    'friend@example.com',
+    'hello1234',
+    'Friend User',
+    undefined,
+    {},
+    undefined,
+    'ref999',
+  );
+  const social = await service.socialLogin(
+    'google',
+    'google-ref-friend',
+    'social-friend@example.com',
+    'Social Friend',
+    undefined,
+    {},
+    undefined,
+    'REF999',
+  );
+
+  const registeredUser = mock.users.get(registered.user.id);
+  const socialUser = mock.users.get(social.user.id);
+
+  assert.equal(registeredUser?.referredById, 'u-ref');
+  assert.equal(socialUser?.referredById, 'u-ref');
+  assert.equal(mock.referralEvents.size, 2);
+  assert.equal(
+    [...mock.notifications.values()].filter((item) => item.userId === 'u-ref' && item.title === 'New referral signup')
+      .length,
+    2,
+  );
 });
 
 test('auth.createGuestSession creates a guest user and returns tokens', async () => {

@@ -15,15 +15,20 @@ import { RequestWithUser } from '../../common/interfaces/request-with-user.inter
 import { JwtGuard } from '../../common/jwt.guard';
 import { PermissionsGuard } from '../../common/permissions.guard';
 import { AddProductMediaDto } from './dto/add-product-media.dto';
+import { AnswerQuestionDto } from './dto/answer-question.dto';
+import { CreateQuestionDto } from './dto/create-question.dto';
 import { CreateReviewDto } from './dto/create-review.dto';
 import { CreateBrandDto } from './dto/create-brand.dto';
 import { CreateCategoryDto } from './dto/create-category.dto';
 import { CreateProductDto } from './dto/create-product.dto';
 import { ImportProductsDto } from './dto/import-products.dto';
 import { ModerateReviewDto } from './dto/moderate-review.dto';
+import { QueryPriceHistoryDto } from './dto/query-price-history.dto';
 import { QueryProductsDto } from './dto/query-products.dto';
+import { QueryQuestionsDto } from './dto/query-questions.dto';
 import { QueryReviewsDto } from './dto/query-reviews.dto';
 import { ReplyReviewDto } from './dto/reply-review.dto';
+import { SetPriceAlertDto } from './dto/set-price-alert.dto';
 import { UpdateProductDto } from './dto/update-product.dto';
 import { ProductsService } from './products.service';
 
@@ -154,6 +159,64 @@ export class ProductsController {
     @Body() body: ModerateReviewDto,
   ) {
     return this.service.moderateReview(idOrSlug, reviewId, body);
+  }
+
+  @Get(':idOrSlug/questions')
+  questions(@Param('idOrSlug') idOrSlug: string, @Query() query: QueryQuestionsDto) {
+    return this.service.listQuestions(idOrSlug, query);
+  }
+
+  @Get(':idOrSlug/price-history')
+  priceHistory(@Param('idOrSlug') idOrSlug: string, @Query() query: QueryPriceHistoryDto) {
+    return this.service.listPriceHistory(idOrSlug, query);
+  }
+
+  @Post(':idOrSlug/questions')
+  @UseGuards(JwtGuard)
+  createQuestion(
+    @Req() request: RequestWithUser,
+    @Param('idOrSlug') idOrSlug: string,
+    @Body() body: CreateQuestionDto,
+  ) {
+    return this.service.createQuestion(request.user!.sub, idOrSlug, body);
+  }
+
+  @Post(':idOrSlug/questions/:questionId/upvote')
+  @UseGuards(JwtGuard)
+  upvoteQuestion(
+    @Req() request: RequestWithUser,
+    @Param('idOrSlug') idOrSlug: string,
+    @Param('questionId') questionId: string,
+  ) {
+    return this.service.upvoteQuestion(request.user!.sub, idOrSlug, questionId);
+  }
+
+  @Post(':idOrSlug/price-alert')
+  @UseGuards(JwtGuard)
+  setPriceAlert(
+    @Req() request: RequestWithUser,
+    @Param('idOrSlug') idOrSlug: string,
+    @Body() body: SetPriceAlertDto,
+  ) {
+    return this.service.setPriceAlert(request.user!.sub, idOrSlug, body);
+  }
+
+  @Patch(':idOrSlug/questions/:questionId/answer')
+  @UseGuards(JwtGuard, PermissionsGuard)
+  @Permissions('catalog.write')
+  answerQuestion(
+    @Req() request: RequestWithUser,
+    @Param('idOrSlug') idOrSlug: string,
+    @Param('questionId') questionId: string,
+    @Body() body: AnswerQuestionDto,
+  ) {
+    return this.service.answerQuestion(request.user!.sub, idOrSlug, questionId, body.answer);
+  }
+
+  @Delete(':idOrSlug/price-alert')
+  @UseGuards(JwtGuard)
+  removePriceAlert(@Req() request: RequestWithUser, @Param('idOrSlug') idOrSlug: string) {
+    return this.service.removePriceAlert(request.user!.sub, idOrSlug);
   }
 
   @Get(':idOrSlug')

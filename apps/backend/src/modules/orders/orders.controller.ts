@@ -13,6 +13,7 @@ import { RequestWithUser } from '../../common/interfaces/request-with-user.inter
 import { JwtGuard } from '../../common/jwt.guard';
 import { PermissionsGuard } from '../../common/permissions.guard';
 import { CheckoutDto } from './dto/checkout.dto';
+import { CreateOrderNoteDto } from './dto/create-order-note.dto';
 import { UpdateOrderStatusDto } from './dto/update-order-status.dto';
 import { OrdersService } from './orders.service';
 
@@ -87,6 +88,20 @@ export class OrdersController {
     @Body() body: UpdateOrderStatusDto,
   ) {
     return this.service.updateStatus(id, body.status, request.user!.sub);
+  }
+
+  @Get(':id/notes')
+  notes(@Req() request: RequestWithUser, @Param('id') id: string) {
+    return this.service.listNotes(id, request.user!.sub, request.user!.role);
+  }
+
+  @Post(':id/notes')
+  addNote(
+    @Req() request: RequestWithUser,
+    @Param('id') id: string,
+    @Body() body: CreateOrderNoteDto,
+  ) {
+    return this.service.addNote(id, request.user!.sub, request.user!.role, body);
   }
 
   @Get(':id')

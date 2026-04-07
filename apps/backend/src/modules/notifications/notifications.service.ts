@@ -3,6 +3,8 @@ import { NotificationChannel, NotificationType, Prisma } from '@prisma/client';
 import { PrismaService } from '../../infra/prisma/prisma.service';
 import { CreateNotificationBatchDto } from './dto/create-notification-batch.dto';
 import { CreateNotificationTemplateDto } from './dto/create-notification-template.dto';
+import { CreatePushSubscriptionDto } from './dto/create-push-subscription.dto';
+import { DispatchAbandonedCartRemindersDto } from './dto/dispatch-abandoned-cart-reminders.dto';
 import { DispatchScheduledNotificationsDto } from './dto/dispatch-scheduled-notifications.dto';
 import { QueryNotificationsDto } from './dto/query-notifications.dto';
 import { UnsubscribeNotificationsDto } from './dto/unsubscribe-notifications.dto';
@@ -120,6 +122,83 @@ export class NotificationsService {
       where: { userId },
       data,
     });
+  }
+
+  async listPushSubscriptions(userId: string) {
+    return {
+      data: await (this.prisma as any).pushSubscription.findMany({
+        where: { userId },
+        orderBy: [{ createdAt: 'desc' }],
+      }),
+    };
+  }
+
+  async savePushSubscription(userId: string, payload: CreatePushSubscriptionDto) {
+    await this.ensurePreferences(userId);
+
+    const existing = await (this.prisma as any).pushSubscription.findUnique({
+      where: { endpoint: payload.endpoint },
+    });
+
+    const data = {
+      userId,
+      endpoint: payload.endpoint,
+      p256dh: payload.p256dh,
+      auth: payload.auth,
+      userAgent: payload.userAgent ?? null,
+    };
+
+    const subscription = existing
+      ? await (this.prisma as any).pushSubscription.update({
+          where: { endpoint: payload.endpoint },
+          data,
+        })
+      : await (this.prisma as any).pushSubscription.create({
+          data,
+        });
+
+    await this.prisma.notificationPreference.update({
+      where: { userId },
+      data: { pushEnabled: true },
+    });
+
+    return {
+      data: subscription,
+    };
+  }
+
+  async removePushSubscription(userId: string, id: string) {
+    const existing = await (this.prisma as any).pushSubscription.findFirst({
+      where: {
+        id,
+        userId,
+      },
+    });
+
+    if (!existing) {
+      throw new NotFoundException('Push subscription not found');
+    }
+
+    await (this.prisma as any).pushSubscription.delete({
+      where: { id },
+    });
+
+    const remaining = await (this.prisma as any).pushSubscription.count({
+      where: { userId },
+    });
+    await this.ensurePreferences(userId);
+    if (!remaining) {
+      await this.prisma.notificationPreference.update({
+        where: { userId },
+        data: { pushEnabled: false },
+      });
+    }
+
+    return {
+      success: true,
+      deletedId: id,
+      remaining,
+    };
   }
 
   async listTemplates(channel?: NotificationChannel) {
@@ -302,6 +381,118 @@ export class NotificationsService {
       processed: pending.length,
       ids: pending.map((notification) => notification.id),
       processedAt: now,
+    };
+  }
+
+  async dispatchAbandonedCartReminders(payload: DispatchAbandonedCartRemindersDto = {}) {
+    const limit = payload.limit ?? 100;
+    const idleMinutes = payload.idleMinutes ?? 24 * 60;
+    const channel = payload.channel ?? 'email';
+    const cutoff = new Date(Date.now() - idleMinutes * 60 * 1000);
+    const rows = await this.prisma.cartItem.findMany({
+      where: {
+        updatedAt: { lte: cutoff },
+      },
+      include: {
+        variant: true,
+      },
+      orderBy: [{ updatedAt: 'asc' }],
+    });
+
+    const grouped = new Map<
+      string,
+      {
+        userId: string;
+        latestCartUpdatedAt: Date;
+        cartItemCount: number;
+        subtotal: number;
+      }
+    >();
+
+    for (const row of rows) {
+      const current = grouped.get(row.userId);
+      const lineTotal = row.quantity * row.variant.price;
+      if (!current) {
+        grouped.set(row.userId, {
+          userId: row.userId,
+          latestCartUpdatedAt: row.updatedAt,
+          cartItemCount: row.quantity,
+          subtotal: lineTotal,
+        });
+        continue;
+      }
+
+      grouped.set(row.userId, {
+        userId: row.userId,
+        latestCartUpdatedAt:
+          row.updatedAt.getTime() > current.latestCartUpdatedAt.getTime()
+            ? row.updatedAt
+            : current.latestCartUpdatedAt,
+        cartItemCount: current.cartItemCount + row.quantity,
+        subtotal: current.subtotal + lineTotal,
+      });
+    }
+
+    let created = 0;
+    let skipped = 0;
+    const userIds: string[] = [];
+
+    for (const candidate of [...grouped.values()].slice(0, limit)) {
+      const [preferences, existingReminder] = await Promise.all([
+        this.ensurePreferences(candidate.userId),
+        (this.prisma as any).cartReminderEvent.findFirst({
+          where: {
+            userId: candidate.userId,
+            latestCartUpdatedAt: candidate.latestCartUpdatedAt,
+            channel,
+          },
+        }),
+      ]);
+
+      if (existingReminder || !this.canDeliver('promotion', channel, preferences)) {
+        skipped += 1;
+        continue;
+      }
+
+      const notification = await this.prisma.notification.create({
+        data: {
+          userId: candidate.userId,
+          type: 'promotion',
+          channel,
+          templateKey: 'cart.abandoned',
+          title: 'You still have items waiting in your cart',
+          content: `Complete checkout for ${candidate.cartItemCount} item(s) before stock changes.`,
+          data: {
+            cartItemCount: candidate.cartItemCount,
+            subtotal: candidate.subtotal,
+            latestCartUpdatedAt: candidate.latestCartUpdatedAt.toISOString(),
+          },
+          deliveredAt: new Date(),
+        },
+      });
+
+      await (this.prisma as any).cartReminderEvent.create({
+        data: {
+          userId: candidate.userId,
+          notificationId: notification.id,
+          channel,
+          latestCartUpdatedAt: candidate.latestCartUpdatedAt,
+          cartItemCount: candidate.cartItemCount,
+          subtotal: candidate.subtotal,
+        },
+      });
+
+      created += 1;
+      userIds.push(candidate.userId);
+    }
+
+    return {
+      scanned: grouped.size,
+      created,
+      skipped,
+      channel,
+      idleMinutes,
+      userIds,
     };
   }
 

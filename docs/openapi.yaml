@@ -2,20 +2,24 @@ openapi: 3.0.3
 info:
   title: BanHang Backend API
   version: 2.0.0
-  description: Versioned NestJS backend API for auth, catalog, cart, orders, payments, inventory, shipping, notifications, and reporting.
+  description: Versioned NestJS backend API for auth, CRM, content, catalog, cart, orders, payments, inventory, shipping, notifications, reporting, and store locator flows.
 servers:
   - url: http://localhost:4000/api/v1
 tags:
   - name: Health
   - name: Auth
   - name: Account
+  - name: CRM
   - name: Search
+  - name: Content
   - name: Catalog
   - name: Cart
+  - name: Compare
   - name: Orders
   - name: Payments
   - name: Inventory
   - name: Shipping
+  - name: Stores
   - name: Notifications
   - name: Reporting
   - name: Wishlist
@@ -61,7 +65,7 @@ paths:
   /auth/social/{provider}:
     post:
       tags: [Auth]
-      summary: Social login or account linking with optional guest cart merge
+      summary: Social login or account linking with optional guest cart merge and referral tracking
       parameters:
         - in: path
           name: provider
@@ -86,7 +90,7 @@ paths:
   /auth/register:
     post:
       tags: [Auth]
-      summary: Register a customer account with optional guest cart merge
+      summary: Register a customer account with optional guest cart merge and referral tracking
       requestBody:
         required: true
         content:
@@ -380,12 +384,48 @@ paths:
   /account/loyalty:
     get:
       tags: [Account]
-      summary: Loyalty summary and earning history derived from completed orders
+      summary: Loyalty summary and earning history derived from completed orders and referral rewards
       security:
         - bearerAuth: []
       responses:
         '200':
           description: Loyalty points balance, tier, and history
+
+  /account/loyalty/redeem:
+    post:
+      tags: [Account]
+      summary: Redeem loyalty points into a single-use coupon voucher
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RedeemLoyaltyRequest'
+      responses:
+        '200':
+          description: Loyalty redemption result with created coupon
+
+  /account/referral:
+    get:
+      tags: [Account]
+      summary: Get current customer referral code, share link, and referral stats
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Referral summary with signups and rewards
+
+  /account/referral/regenerate:
+    post:
+      tags: [Account]
+      summary: Rotate current customer referral code and return updated referral summary
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Referral summary with refreshed code
 
   /account/profile:
     get:
@@ -496,6 +536,184 @@ paths:
       responses:
         '200':
           description: Customer data export
+
+  /crm/customers:
+    get:
+      tags: [CRM]
+      summary: List CRM customers with segments, tags, and lifetime metrics
+      security:
+        - bearerAuth: []
+        - apiKeyAuth: []
+      parameters:
+        - in: query
+          name: q
+          schema:
+            type: string
+        - in: query
+          name: segment
+          schema:
+            type: string
+            enum: [vip, new, at_risk, inactive, active]
+        - in: query
+          name: tag
+          schema:
+            type: string
+        - in: query
+          name: role
+          schema:
+            type: string
+            enum: [customer, guest]
+        - in: query
+          name: page
+          schema:
+            type: integer
+            minimum: 1
+        - in: query
+          name: limit
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+      responses:
+        '200':
+          description: Paginated CRM customer list
+
+  /crm/customers/export:
+    get:
+      tags: [CRM]
+      summary: Export CRM customer dataset for admin workflows
+      security:
+        - bearerAuth: []
+        - apiKeyAuth: []
+      parameters:
+        - in: query
+          name: q
+          schema:
+            type: string
+        - in: query
+          name: segment
+          schema:
+            type: string
+            enum: [vip, new, at_risk, inactive, active]
+        - in: query
+          name: tag
+          schema:
+            type: string
+        - in: query
+          name: role
+          schema:
+            type: string
+            enum: [customer, guest]
+      responses:
+        '200':
+          description: Customer export payload
+
+  /crm/customers/{id}:
+    get:
+      tags: [CRM]
+      summary: Get CRM customer detail with notes, tags, orders, and wishlist preview
+      security:
+        - bearerAuth: []
+        - apiKeyAuth: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: CRM customer detail
+
+  /crm/customers/{id}/notes:
+    post:
+      tags: [CRM]
+      summary: Add an internal CRM note to a customer
+      security:
+        - bearerAuth: []
+        - apiKeyAuth: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateCustomerNoteRequest'
+      responses:
+        '201':
+          description: CRM note created
+
+  /crm/customers/{id}/notes/{noteId}:
+    delete:
+      tags: [CRM]
+      summary: Delete an internal CRM note
+      security:
+        - bearerAuth: []
+        - apiKeyAuth: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+        - in: path
+          name: noteId
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: CRM note deleted
+
+  /crm/customers/{id}/tags:
+    post:
+      tags: [CRM]
+      summary: Attach a CRM tag to a customer
+      security:
+        - bearerAuth: []
+        - apiKeyAuth: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateCustomerTagRequest'
+      responses:
+        '201':
+          description: CRM tag attached
+
+  /crm/customers/{id}/tags/{tagId}:
+    delete:
+      tags: [CRM]
+      summary: Remove a CRM tag from a customer
+      security:
+        - bearerAuth: []
+        - apiKeyAuth: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+        - in: path
+          name: tagId
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: CRM tag removed
 
   /search:
     get:
@@ -1042,6 +1260,178 @@ paths:
         '200':
           description: Review status updated
 
+  /products/{productRef}/questions:
+    get:
+      tags: [Catalog]
+      summary: List product Q-and-A with search and answered filters
+      parameters:
+        - in: path
+          name: productRef
+          required: true
+          schema:
+            type: string
+        - in: query
+          name: q
+          schema:
+            type: string
+        - in: query
+          name: answeredOnly
+          schema:
+            type: boolean
+        - in: query
+          name: unansweredOnly
+          schema:
+            type: boolean
+        - in: query
+          name: sort
+          schema:
+            type: string
+            enum: [recent, helpful, answered]
+        - in: query
+          name: page
+          schema:
+            type: integer
+            minimum: 1
+        - in: query
+          name: limit
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 50
+      responses:
+        '200':
+          description: Product questions list
+    post:
+      tags: [Catalog]
+      summary: Ask a question on a product detail page
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: path
+          name: productRef
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateQuestionRequest'
+      responses:
+        '201':
+          description: Product question created
+
+  /products/{productRef}/questions/{questionId}/upvote:
+    post:
+      tags: [Catalog]
+      summary: Upvote a published product question
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: path
+          name: productRef
+          required: true
+          schema:
+            type: string
+        - in: path
+          name: questionId
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Upvote result
+
+  /products/{productRef}/questions/{questionId}/answer:
+    patch:
+      tags: [Catalog]
+      summary: Answer a product question as admin or catalog staff
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: path
+          name: productRef
+          required: true
+          schema:
+            type: string
+        - in: path
+          name: questionId
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AnswerQuestionRequest'
+      responses:
+        '200':
+          description: Product question answered
+
+  /products/{productRef}/price-history:
+    get:
+      tags: [Catalog]
+      summary: List price history snapshots for a product detail page
+      parameters:
+        - in: path
+          name: productRef
+          required: true
+          schema:
+            type: string
+        - in: query
+          name: days
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 365
+        - in: query
+          name: limit
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+      responses:
+        '200':
+          description: Product price history timeline
+
+  /products/{productRef}/price-alert:
+    post:
+      tags: [Catalog]
+      summary: Create or update an active price alert for the current customer
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: path
+          name: productRef
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SetPriceAlertRequest'
+      responses:
+        '200':
+          description: Price alert saved
+    delete:
+      tags: [Catalog]
+      summary: Deactivate the current customer's price alert for a product
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: path
+          name: productRef
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Price alert deactivated
+
   /cart:
     get:
       tags: [Cart]
@@ -1185,6 +1575,58 @@ paths:
         '200':
           description: Empty cart
 
+  /compare:
+    get:
+      tags: [Compare]
+      summary: List current compare products with differing field hints
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Compare list
+
+  /compare/items:
+    post:
+      tags: [Compare]
+      summary: Add a product into the compare list
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AddCompareItemRequest'
+      responses:
+        '200':
+          description: Compare list updated
+
+  /compare/items/{productId}:
+    delete:
+      tags: [Compare]
+      summary: Remove one product from compare list
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: path
+          name: productId
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Compare list updated
+
+  /compare/clear:
+    delete:
+      tags: [Compare]
+      summary: Clear the compare list
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Compare list cleared
+
   /wishlist:
     get:
       tags: [Wishlist]
@@ -1226,6 +1668,78 @@ paths:
       responses:
         '200':
           description: Wishlist updated
+
+  /wishlist/items/{productId}/move-to-cart:
+    post:
+      tags: [Wishlist]
+      summary: Move one wishlist item into the current cart using the default purchasable selection
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: path
+          name: productId
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Wishlist item moved into cart
+
+  /wishlist/share/current:
+    get:
+      tags: [Wishlist]
+      summary: Get the current authenticated user's active wishlist share link
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Wishlist share metadata or null when not shared
+
+  /wishlist/share:
+    post:
+      tags: [Wishlist]
+      summary: Create or reactivate a wishlist share link
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateWishlistShareRequest'
+      responses:
+        '200':
+          description: Wishlist share metadata
+
+  /wishlist/share/regenerate:
+    post:
+      tags: [Wishlist]
+      summary: Rotate the wishlist share token and return the new public link
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateWishlistShareRequest'
+      responses:
+        '200':
+          description: Refreshed wishlist share metadata
+
+  /wishlist/shared/{token}:
+    get:
+      tags: [Wishlist]
+      summary: Read a publicly shared wishlist by opaque token
+      parameters:
+        - in: path
+          name: token
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Public wishlist view
 
   /orders:
     get:
@@ -1329,6 +1843,42 @@ paths:
         '200':
           description: Order detail
 
+  /orders/{id}/notes:
+    get:
+      tags: [Orders]
+      summary: List order notes with internal notes hidden from customers
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Order notes
+    post:
+      tags: [Orders]
+      summary: Add internal or customer-facing note to an order
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateOrderNoteRequest'
+      responses:
+        '201':
+          description: Order note created
+
   /orders/{id}/invoice:
     get:
       tags: [Orders]
@@ -1422,6 +1972,62 @@ paths:
       responses:
         '200':
           description: Payment method list
+
+  /payments/saved-methods:
+    get:
+      tags: [Payments]
+      summary: List saved payment methods for the current user
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Saved payment methods
+    post:
+      tags: [Payments]
+      summary: Save a reusable payment method token or card reference
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateSavedPaymentMethodRequest'
+      responses:
+        '201':
+          description: Saved payment method created
+
+  /payments/saved-methods/{id}/default:
+    post:
+      tags: [Payments]
+      summary: Mark one saved payment method as default
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Saved payment method updated
+
+  /payments/saved-methods/{id}:
+    delete:
+      tags: [Payments]
+      summary: Remove a saved payment method
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Saved payment method removed
 
   /payments:
     post:
@@ -1768,6 +2374,46 @@ paths:
         '200':
           description: Notification preferences updated
 
+  /notifications/push/subscriptions:
+    get:
+      tags: [Notifications]
+      summary: List current user Web Push subscriptions
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Push subscription list
+    post:
+      tags: [Notifications]
+      summary: Create or refresh current user Web Push subscription
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreatePushSubscriptionRequest'
+      responses:
+        '201':
+          description: Push subscription saved
+
+  /notifications/push/subscriptions/{id}:
+    delete:
+      tags: [Notifications]
+      summary: Remove current user Web Push subscription
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Push subscription removed
+
   /notifications/templates/list:
     get:
       tags: [Notifications]
@@ -1877,6 +2523,22 @@ paths:
         '200':
           description: Scheduled notifications dispatched
 
+  /notifications/dispatch/abandoned-cart:
+    post:
+      tags: [Notifications]
+      summary: Dispatch abandoned cart reminders for idle server-side carts
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DispatchAbandonedCartRemindersRequest'
+      responses:
+        '200':
+          description: Abandoned cart reminders dispatched
+
   /reporting/summary:
     get:
       tags: [Reporting]
@@ -1945,6 +2607,369 @@ paths:
         '200':
           description: Coupon analytics
 
+  /content/pages:
+    get:
+      tags: [Content]
+      summary: List published static pages
+      parameters:
+        - in: query
+          name: q
+          schema:
+            type: string
+        - in: query
+          name: page
+          schema:
+            type: integer
+            minimum: 1
+        - in: query
+          name: limit
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 50
+      responses:
+        '200':
+          description: Published page list
+    post:
+      tags: [Content]
+      summary: Create a static page
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateContentPageRequest'
+      responses:
+        '201':
+          description: Content page created
+
+  /content/pages/{pageRef}:
+    get:
+      tags: [Content]
+      summary: Get a published static page by slug
+      parameters:
+        - in: path
+          name: pageRef
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Static page detail
+    patch:
+      tags: [Content]
+      summary: Update a static page
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: path
+          name: pageRef
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateContentPageRequest'
+      responses:
+        '200':
+          description: Content page updated
+
+  /content/blog:
+    get:
+      tags: [Content]
+      summary: List published blog posts
+      parameters:
+        - in: query
+          name: q
+          schema:
+            type: string
+        - in: query
+          name: tag
+          schema:
+            type: string
+        - in: query
+          name: page
+          schema:
+            type: integer
+            minimum: 1
+        - in: query
+          name: limit
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 50
+      responses:
+        '200':
+          description: Blog list
+    post:
+      tags: [Content]
+      summary: Create a blog post
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateBlogPostRequest'
+      responses:
+        '201':
+          description: Blog post created
+
+  /content/blog/{postRef}:
+    get:
+      tags: [Content]
+      summary: Get a published blog post by slug
+      parameters:
+        - in: path
+          name: postRef
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Blog post detail
+    patch:
+      tags: [Content]
+      summary: Update a blog post
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: path
+          name: postRef
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateBlogPostRequest'
+      responses:
+        '200':
+          description: Blog post updated
+
+  /content/promotions:
+    get:
+      tags: [Content]
+      summary: List active or scheduled promotions and banners
+      parameters:
+        - in: query
+          name: kind
+          schema:
+            type: string
+            enum: [banner, flash_sale, popup, newsletter]
+        - in: query
+          name: placement
+          schema:
+            type: string
+            enum: [home_hero, home_flash_sale, home_popup, category_top, checkout_sidebar]
+        - in: query
+          name: includeInactive
+          schema:
+            type: boolean
+        - in: query
+          name: page
+          schema:
+            type: integer
+            minimum: 1
+        - in: query
+          name: limit
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 50
+      responses:
+        '200':
+          description: Promotion list
+    post:
+      tags: [Content]
+      summary: Create a promotion or banner campaign
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreatePromotionRequest'
+      responses:
+        '201':
+          description: Promotion created
+
+  /content/newsletter/subscribe:
+    post:
+      tags: [Content]
+      summary: Subscribe an email to newsletter with double opt-in
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SubscribeNewsletterRequest'
+      responses:
+        '200':
+          description: Newsletter subscription pending confirmation
+
+  /content/newsletter/confirm:
+    post:
+      tags: [Content]
+      summary: Confirm newsletter subscription using opt-in token
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ConfirmNewsletterRequest'
+      responses:
+        '200':
+          description: Newsletter subscription activated
+
+  /content/newsletter/unsubscribe:
+    post:
+      tags: [Content]
+      summary: Unsubscribe an email from newsletter
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UnsubscribeNewsletterRequest'
+      responses:
+        '200':
+          description: Newsletter subscription removed
+
+  /content/promotions/{id}:
+    patch:
+      tags: [Content]
+      summary: Update a promotion or banner campaign
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdatePromotionRequest'
+      responses:
+        '200':
+          description: Promotion updated
+
+  /stores:
+    get:
+      tags: [Stores]
+      summary: List active stores with filters
+      parameters:
+        - in: query
+          name: q
+          schema:
+            type: string
+        - in: query
+          name: province
+          schema:
+            type: string
+        - in: query
+          name: district
+          schema:
+            type: string
+        - in: query
+          name: service
+          schema:
+            type: string
+        - in: query
+          name: openNow
+          schema:
+            type: boolean
+        - in: query
+          name: page
+          schema:
+            type: integer
+            minimum: 1
+        - in: query
+          name: limit
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+      responses:
+        '200':
+          description: Store list
+
+  /stores/nearest:
+    get:
+      tags: [Stores]
+      summary: Find nearest active stores from a lat/lng origin
+      parameters:
+        - in: query
+          name: lat
+          required: true
+          schema:
+            type: number
+        - in: query
+          name: lng
+          required: true
+          schema:
+            type: number
+        - in: query
+          name: radiusKm
+          schema:
+            type: number
+        - in: query
+          name: limit
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 50
+      responses:
+        '200':
+          description: Nearest store list
+
+  /stores/{idOrSlug}:
+    get:
+      tags: [Stores]
+      summary: Get store detail by id or slug
+      parameters:
+        - in: path
+          name: idOrSlug
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Store detail
+
+  /stores/{idOrSlug}/appointments:
+    post:
+      tags: [Stores]
+      summary: Request an in-store appointment
+      parameters:
+        - in: path
+          name: idOrSlug
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateStoreAppointmentRequest'
+      responses:
+        '201':
+          description: Appointment created
+
 components:
   securitySchemes:
     bearerAuth:
@@ -1991,6 +3016,9 @@ components:
         guestAccessToken:
           type: string
           minLength: 20
+        referralCode:
+          type: string
+          minLength: 4
     UpdateProfileRequest:
       type: object
       properties:
@@ -2000,6 +3028,13 @@ components:
         phone:
           type: string
           minLength: 8
+    RedeemLoyaltyRequest:
+      type: object
+      required: [points]
+      properties:
+        points:
+          type: integer
+          minimum: 500
     DeleteAccountRequest:
       type: object
       required: [password]
@@ -2077,6 +3112,9 @@ components:
         guestAccessToken:
           type: string
           minLength: 20
+        referralCode:
+          type: string
+          minLength: 4
     RefreshRequest:
       type: object
       properties:
@@ -2213,6 +3251,8 @@ components:
             role:
               type: string
             phone:
+              type: string
+            referralCode:
               type: string
             emailVerifiedAt:
               type: string
@@ -2390,6 +3430,28 @@ components:
           type: string
           minLength: 2
           maxLength: 1000
+    CreateQuestionRequest:
+      type: object
+      required: [question]
+      properties:
+        question:
+          type: string
+          minLength: 8
+          maxLength: 1000
+    AnswerQuestionRequest:
+      type: object
+      required: [answer]
+      properties:
+        answer:
+          type: string
+          minLength: 2
+          maxLength: 2000
+    SetPriceAlertRequest:
+      type: object
+      properties:
+        targetPrice:
+          type: integer
+          minimum: 0
     AddCartItemRequest:
       type: object
       required: [productId, quantity]
@@ -2402,6 +3464,23 @@ components:
           type: integer
           minimum: 1
     AddWishlistItemRequest:
+      type: object
+      required: [productId]
+      properties:
+        productId:
+          type: string
+    CreateWishlistShareRequest:
+      type: object
+      properties:
+        title:
+          type: string
+          minLength: 2
+          maxLength: 120
+        expiresInDays:
+          type: integer
+          minimum: 1
+          maximum: 365
+    AddCompareItemRequest:
       type: object
       required: [productId]
       properties:
@@ -2464,6 +3543,17 @@ components:
           enum: [standard, express, same_day, pickup]
         notes:
           type: string
+    CreateOrderNoteRequest:
+      type: object
+      required: [content]
+      properties:
+        content:
+          type: string
+          minLength: 3
+          maxLength: 2000
+        visibility:
+          type: string
+          enum: [internal, customer]
     UpdateOrderStatusRequest:
       type: object
       required: [status]
@@ -2480,6 +3570,8 @@ components:
         method:
           type: string
           enum: [cod, vnpay, momo, zalopay, stripe, paypal, bank_transfer]
+        savedPaymentMethodId:
+          type: string
         returnUrl:
           type: string
           format: uri
@@ -2487,6 +3579,34 @@ components:
           type: string
         locale:
           type: string
+    CreateSavedPaymentMethodRequest:
+      type: object
+      required: [gateway, method, label, tokenRef]
+      properties:
+        gateway:
+          type: string
+        method:
+          type: string
+          enum: [cod, vnpay, momo, zalopay, stripe, paypal, bank_transfer]
+        label:
+          type: string
+        brand:
+          type: string
+        last4:
+          type: string
+        expiryMonth:
+          type: integer
+          minimum: 1
+          maximum: 12
+        expiryYear:
+          type: integer
+          minimum: 2000
+        tokenRef:
+          type: string
+        providerCustomerRef:
+          type: string
+        isDefault:
+          type: boolean
     RefundPaymentRequest:
       type: object
       properties:
@@ -2627,6 +3747,24 @@ components:
         channel:
           type: string
           enum: [in_app, email, sms, push]
+    CreatePushSubscriptionRequest:
+      type: object
+      required: [endpoint, p256dh, auth]
+      properties:
+        endpoint:
+          type: string
+          format: uri
+        p256dh:
+          type: string
+          minLength: 8
+          maxLength: 512
+        auth:
+          type: string
+          minLength: 8
+          maxLength: 256
+        userAgent:
+          type: string
+          maxLength: 255
     CreateNotificationTemplateRequest:
       type: object
       required: [key, channel, titleTemplate, contentTemplate]
@@ -2701,3 +3839,303 @@ components:
           type: integer
           minimum: 1
           maximum: 500
+    DispatchAbandonedCartRemindersRequest:
+      type: object
+      properties:
+        limit:
+          type: integer
+          minimum: 1
+          maximum: 500
+        idleMinutes:
+          type: integer
+          minimum: 15
+          maximum: 43200
+        channel:
+          type: string
+          enum: [in_app, email]
+    CreateCustomerNoteRequest:
+      type: object
+      required: [content]
+      properties:
+        title:
+          type: string
+          minLength: 3
+          maxLength: 120
+        content:
+          type: string
+          minLength: 3
+          maxLength: 4000
+        isPinned:
+          type: boolean
+    CreateCustomerTagRequest:
+      type: object
+      required: [name]
+      properties:
+        name:
+          type: string
+          minLength: 2
+          maxLength: 50
+        color:
+          type: string
+          pattern: '^#[0-9A-Fa-f]{6}$'
+    CreateContentPageRequest:
+      type: object
+      required: [title, content]
+      properties:
+        title:
+          type: string
+          minLength: 3
+        slug:
+          type: string
+        excerpt:
+          type: string
+        content:
+          type: string
+          minLength: 10
+        metaTitle:
+          type: string
+        metaDescription:
+          type: string
+        isPublished:
+          type: boolean
+        publishedAt:
+          type: string
+          format: date-time
+    UpdateContentPageRequest:
+      type: object
+      properties:
+        title:
+          type: string
+          minLength: 3
+        slug:
+          type: string
+        excerpt:
+          type: string
+        content:
+          type: string
+          minLength: 10
+        metaTitle:
+          type: string
+        metaDescription:
+          type: string
+        isPublished:
+          type: boolean
+        publishedAt:
+          type: string
+          format: date-time
+    CreateBlogPostRequest:
+      type: object
+      required: [title, content]
+      properties:
+        title:
+          type: string
+          minLength: 3
+        slug:
+          type: string
+        excerpt:
+          type: string
+        content:
+          type: string
+          minLength: 10
+        coverImageUrl:
+          type: string
+          format: uri
+        tags:
+          type: array
+          items:
+            type: string
+        relatedProductIds:
+          type: array
+          items:
+            type: string
+        readTimeMinutes:
+          type: integer
+          minimum: 1
+          maximum: 60
+        isPublished:
+          type: boolean
+        publishedAt:
+          type: string
+          format: date-time
+    UpdateBlogPostRequest:
+      type: object
+      properties:
+        title:
+          type: string
+          minLength: 3
+        slug:
+          type: string
+        excerpt:
+          type: string
+        content:
+          type: string
+          minLength: 10
+        coverImageUrl:
+          type: string
+          format: uri
+        tags:
+          type: array
+          items:
+            type: string
+        relatedProductIds:
+          type: array
+          items:
+            type: string
+        readTimeMinutes:
+          type: integer
+          minimum: 1
+          maximum: 60
+        isPublished:
+          type: boolean
+        publishedAt:
+          type: string
+          format: date-time
+    CreatePromotionRequest:
+      type: object
+      required: [name, kind, placement, title, startsAt]
+      properties:
+        name:
+          type: string
+          minLength: 3
+        key:
+          type: string
+        kind:
+          type: string
+          enum: [banner, flash_sale, popup, newsletter]
+        placement:
+          type: string
+          enum: [home_hero, home_flash_sale, home_popup, category_top, checkout_sidebar]
+        title:
+          type: string
+          minLength: 3
+        subtitle:
+          type: string
+        content:
+          type: string
+        imageUrl:
+          type: string
+          format: uri
+        videoUrl:
+          type: string
+          format: uri
+        linkUrl:
+          type: string
+          format: uri
+        couponCode:
+          type: string
+        discountPercent:
+          type: integer
+          minimum: 1
+          maximum: 100
+        startsAt:
+          type: string
+          format: date-time
+        expiresAt:
+          type: string
+          format: date-time
+        priority:
+          type: integer
+          minimum: 0
+          maximum: 1000
+        isActive:
+          type: boolean
+        metadata:
+          type: object
+          additionalProperties: true
+    SubscribeNewsletterRequest:
+      type: object
+      required: [email]
+      properties:
+        email:
+          type: string
+          format: email
+        fullName:
+          type: string
+          minLength: 2
+        source:
+          type: string
+    ConfirmNewsletterRequest:
+      type: object
+      required: [token]
+      properties:
+        token:
+          type: string
+          minLength: 20
+    UnsubscribeNewsletterRequest:
+      type: object
+      required: [email]
+      properties:
+        email:
+          type: string
+          format: email
+    UpdatePromotionRequest:
+      type: object
+      properties:
+        name:
+          type: string
+          minLength: 3
+        key:
+          type: string
+        kind:
+          type: string
+          enum: [banner, flash_sale, popup, newsletter]
+        placement:
+          type: string
+          enum: [home_hero, home_flash_sale, home_popup, category_top, checkout_sidebar]
+        title:
+          type: string
+          minLength: 3
+        subtitle:
+          type: string
+        content:
+          type: string
+        imageUrl:
+          type: string
+          format: uri
+        videoUrl:
+          type: string
+          format: uri
+        linkUrl:
+          type: string
+          format: uri
+        couponCode:
+          type: string
+        discountPercent:
+          type: integer
+          minimum: 1
+          maximum: 100
+        startsAt:
+          type: string
+          format: date-time
+        expiresAt:
+          type: string
+          format: date-time
+        priority:
+          type: integer
+          minimum: 0
+          maximum: 1000
+        isActive:
+          type: boolean
+        metadata:
+          type: object
+          additionalProperties: true
+    CreateStoreAppointmentRequest:
+      type: object
+      required: [fullName, phone, scheduledFor]
+      properties:
+        fullName:
+          type: string
+          minLength: 2
+        phone:
+          type: string
+          minLength: 8
+        email:
+          type: string
+          format: email
+        service:
+          type: string
+        scheduledFor:
+          type: string
+          format: date-time
+        notes:
+          type: string

@@ -8,7 +8,7 @@ type PaymentRecord = {
   id: string;
   orderId: string;
   gateway: string;
-  method: 'vnpay' | 'cod';
+  method: 'vnpay' | 'cod' | 'stripe' | 'paypal' | 'momo' | 'zalopay' | 'bank_transfer';
   amount: number;
   currency: string;
   status: 'pending' | 'authorized' | 'paid' | 'failed' | 'refunded' | 'partially_refunded' | 'canceled';
@@ -21,6 +21,28 @@ type PaymentRecord = {
 
 function buildMockPrisma(initialPaymentStatus: PaymentRecord['status'] = 'authorized') {
   const events = new Map<string, Record<string, unknown>>();
+  const savedPaymentMethods = new Map([
+    [
+      'spm-1',
+      {
+        id: 'spm-1',
+        userId: 'u-1',
+        gateway: 'stripe',
+        method: 'stripe',
+        label: 'Visa ending 4242',
+        brand: 'Visa',
+        last4: '4242',
+        expiryMonth: 12,
+        expiryYear: 2030,
+        tokenRef: 'tok_demo_4242',
+        providerCustomerRef: 'cus_demo',
+        isDefault: true,
+        metadata: { network: 'visa' },
+        createdAt: new Date('2026-04-05T00:00:00.000Z'),
+        updatedAt: new Date('2026-04-05T00:00:00.000Z'),
+      },
+    ],
+  ]);
   const payments = new Map<string, PaymentRecord>([
     [
       'pay-1',
@@ -45,6 +67,7 @@ function buildMockPrisma(initialPaymentStatus: PaymentRecord['status'] = 'author
       'ord-1',
       {
         id: 'ord-1',
+        userId: 'u-1',
         orderNumber: 'ORD-1',
         total: 150_000,
         currency: 'VND',
@@ -56,6 +79,7 @@ function buildMockPrisma(initialPaymentStatus: PaymentRecord['status'] = 'author
       'ord-2',
       {
         id: 'ord-2',
+        userId: 'u-1',
         orderNumber: 'ORD-2',
         total: 90_000,
         currency: 'VND',
@@ -101,6 +125,90 @@ function buildMockPrisma(initialPaymentStatus: PaymentRecord['status'] = 'author
         return created;
       },
     },
+    savedPaymentMethod: {
+      findMany: async ({ where }: { where: { userId: string } }) =>
+        [...savedPaymentMethods.values()]
+          .filter((item) => item.userId === where.userId)
+          .sort(
+            (left, right) =>
+              Number(right.isDefault) - Number(left.isDefault) ||
+              right.createdAt.getTime() - left.createdAt.getTime(),
+          ),
+      findFirst: async ({ where }: { where: { userId?: string; id?: string; isDefault?: boolean } }) =>
+        [...savedPaymentMethods.values()].find(
+          (item) =>
+            (where.userId === undefined || item.userId === where.userId) &&
+            (where.id === undefined || item.id === where.id) &&
+            (where.isDefault === undefined || item.isDefault === where.isDefault),
+        ) ?? null,
+      create: async ({
+        data,
+      }: {
+        data: {
+          userId: string;
+          gateway: string;
+          method: PaymentRecord['method'];
+          label: string;
+          brand: string | null;
+          last4: string | null;
+          expiryMonth: number | null;
+          expiryYear: number | null;
+          tokenRef: string;
+          providerCustomerRef: string | null;
+          isDefault: boolean;
+          metadata: Record<string, unknown> | null;
+        };
+      }) => {
+        const created = {
+          id: `spm-${savedPaymentMethods.size + 1}`,
+          createdAt: new Date(),
+          updatedAt: new Date(),
+          ...data,
+        };
+        savedPaymentMethods.set(created.id, created);
+        return created;
+      },
+      updateMany: async ({
+        where,
+        data,
+      }: {
+        where: { userId: string };
+        data: { isDefault: boolean };
+      }) => {
+        let count = 0;
+        for (const item of savedPaymentMethods.values()) {
+          if (item.userId === where.userId) {
+            item.isDefault = data.isDefault;
+            item.updatedAt = new Date();
+            count += 1;
+          }
+        }
+        return { count };
+      },
+      update: async ({
+        where,
+        data,
+      }: {
+        where: { id: string };
+        data: { isDefault: boolean };
+      }) => {
+        const item = savedPaymentMethods.get(where.id);
+        if (!item) {
+          throw new Error('saved payment method not found');
+        }
+        const updated = { ...item, ...data, updatedAt: new Date() };
+        savedPaymentMethods.set(item.id, updated);
+        return updated;
+      },
+      delete: async ({ where }: { where: { id: string } }) => {
+        const item = savedPaymentMethods.get(where.id);
+        if (!item) {
+          throw new Error('saved payment method not found');
+        }
+        savedPaymentMethods.delete(where.id);
+        return item;
+      },
+    },
     order: {
       findUnique: async ({ where, include }: { where: { id: string }; include?: { payments?: { orderBy: { createdAt: 'desc' } } } }) => {
         const order = orders.get(where.id) ?? null;
@@ -136,11 +244,12 @@ function buildMockPrisma(initialPaymentStatus: PaymentRecord['status'] = 'author
       findUnique: async ({ where }: { where: { eventId: string } }) => events.get(where.eventId) ?? null,
     },
     payment: tx.payment,
+    savedPaymentMethod: tx.savedPaymentMethod,
     order: tx.order,
     $transaction: async <T>(callback: (transaction: typeof tx) => Promise<T>) => callback(tx),
   };
 
-  return { prisma, events, payments, orders };
+  return { prisma, events, payments, orders, savedPaymentMethods };
 }
 
 function signPayload(payload: unknown, secret: string) {
@@ -223,6 +332,36 @@ test('payments.listMethods initiate and getStatus support checkout orchestration
   assert.equal(methods.data.find((item) => item.method === 'vnpay')?.status, 'disabled');
 });
 
+test('payments.saved payment methods CRUD and initiate by saved method work', async () => {
+  const { prisma, savedPaymentMethods, payments } = buildMockPrisma('authorized');
+  const service = new PaymentsService(prisma as never);
+
+  const listed = await service.listSavedMethods('u-1');
+  const created = await service.createSavedMethod('u-1', {
+    method: 'paypal',
+    gateway: 'paypal',
+    label: 'PayPal john@example.com',
+    tokenRef: 'tok_paypal_demo',
+    isDefault: false,
+  });
+  const setDefault = await service.setDefaultSavedMethod('u-1', 'spm-2');
+  const initiated = await service.initiate({
+    orderId: 'ord-1',
+    savedPaymentMethodId: 'spm-2',
+  });
+  const removed = await service.removeSavedMethod('u-1', 'spm-1');
+
+  assert.equal(listed.total, 1);
+  assert.equal(listed.data[0]?.maskedDetails, '•••• 4242');
+  assert.equal(created.total, 2);
+  assert.equal(setDefault.data[0]?.id, 'spm-2');
+  assert.equal(initiated.gateway, 'paypal');
+  assert.equal(initiated.method, 'paypal');
+  assert.equal((payments.get('pay-1')?.metadata?.savedPaymentMethodId as string) ?? null, 'spm-2');
+  assert.equal(removed.total, 1);
+  assert.equal(savedPaymentMethods.has('spm-1'), false);
+});
+
 test('payments.initiate builds signed VNPay checkout urls when gateway config exists', async () => {
   const previous = {
     VNPAY_TMN_CODE: process.env.VNPAY_TMN_CODE,
@@ -287,6 +426,15 @@ test('payments.reject invalid refunds signatures and unsupported webhook events'
   await assert.rejects(
     async () => service.refund('pay-1', {}),
     (error: unknown) => error instanceof BadRequestException,
+  );
+
+  await assert.rejects(
+    async () =>
+      service.initiate({
+        orderId: 'ord-1',
+        savedPaymentMethodId: 'missing-method',
+      }),
+    (error: unknown) => error instanceof NotFoundException,
   );
 
   await assert.rejects(

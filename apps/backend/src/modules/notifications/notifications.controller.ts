@@ -1,10 +1,12 @@
-import { Body, Controller, Get, Param, Patch, Post, Query, Req, UseGuards } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Param, Patch, Post, Query, Req, UseGuards } from '@nestjs/common';
 import { Permissions } from '../../common/decorators/permissions.decorator';
 import { JwtGuard } from '../../common/jwt.guard';
 import { RequestWithUser } from '../../common/interfaces/request-with-user.interface';
 import { PermissionsGuard } from '../../common/permissions.guard';
 import { CreateNotificationBatchDto } from './dto/create-notification-batch.dto';
 import { CreateNotificationTemplateDto } from './dto/create-notification-template.dto';
+import { CreatePushSubscriptionDto } from './dto/create-push-subscription.dto';
+import { DispatchAbandonedCartRemindersDto } from './dto/dispatch-abandoned-cart-reminders.dto';
 import { DispatchScheduledNotificationsDto } from './dto/dispatch-scheduled-notifications.dto';
 import { PreviewNotificationTemplateDto } from './dto/preview-notification-template.dto';
 import { QueryNotificationsDto } from './dto/query-notifications.dto';
@@ -53,6 +55,21 @@ export class NotificationsController {
     return this.notificationsService.unsubscribe(request.user!.sub, body);
   }
 
+  @Get('push/subscriptions')
+  pushSubscriptions(@Req() request: RequestWithUser) {
+    return this.notificationsService.listPushSubscriptions(request.user!.sub);
+  }
+
+  @Post('push/subscriptions')
+  savePushSubscription(@Req() request: RequestWithUser, @Body() body: CreatePushSubscriptionDto) {
+    return this.notificationsService.savePushSubscription(request.user!.sub, body);
+  }
+
+  @Delete('push/subscriptions/:id')
+  removePushSubscription(@Req() request: RequestWithUser, @Param('id') id: string) {
+    return this.notificationsService.removePushSubscription(request.user!.sub, id);
+  }
+
   @Get('templates/list')
   @UseGuards(JwtGuard, PermissionsGuard)
   @Permissions('notifications.manage')
@@ -93,5 +110,12 @@ export class NotificationsController {
   @Permissions('notifications.manage')
   dispatch(@Body() body: DispatchScheduledNotificationsDto) {
     return this.notificationsService.dispatchScheduled(body);
+  }
+
+  @Post('dispatch/abandoned-cart')
+  @UseGuards(JwtGuard, PermissionsGuard)
+  @Permissions('notifications.manage')
+  dispatchAbandonedCart(@Body() body: DispatchAbandonedCartRemindersDto) {
+    return this.notificationsService.dispatchAbandonedCartReminders(body);
   }
 }

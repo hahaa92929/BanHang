@@ -1,7 +1,9 @@
-import { Body, Controller, Get, Headers, Param, Post, UseGuards } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Headers, Param, Post, Req, UseGuards } from '@nestjs/common';
 import { Permissions } from '../../common/decorators/permissions.decorator';
 import { JwtGuard } from '../../common/jwt.guard';
+import { RequestWithUser } from '../../common/interfaces/request-with-user.interface';
 import { PermissionsGuard } from '../../common/permissions.guard';
+import { CreateSavedPaymentMethodDto } from './dto/create-saved-payment-method.dto';
 import { InitiatePaymentDto } from './dto/initiate-payment.dto';
 import { PaymentWebhookDto } from './dto/payment-webhook.dto';
 import { RefundPaymentDto } from './dto/refund-payment.dto';
@@ -14,6 +16,30 @@ export class PaymentsController {
   @Get('methods')
   methods() {
     return this.paymentsService.listMethods();
+  }
+
+  @Get('saved-methods')
+  @UseGuards(JwtGuard)
+  savedMethods(@Req() request: RequestWithUser) {
+    return this.paymentsService.listSavedMethods(request.user!.sub);
+  }
+
+  @Post('saved-methods')
+  @UseGuards(JwtGuard)
+  createSavedMethod(@Req() request: RequestWithUser, @Body() body: CreateSavedPaymentMethodDto) {
+    return this.paymentsService.createSavedMethod(request.user!.sub, body);
+  }
+
+  @Post('saved-methods/:id/default')
+  @UseGuards(JwtGuard)
+  setDefaultSavedMethod(@Req() request: RequestWithUser, @Param('id') id: string) {
+    return this.paymentsService.setDefaultSavedMethod(request.user!.sub, id);
+  }
+
+  @Delete('saved-methods/:id')
+  @UseGuards(JwtGuard)
+  removeSavedMethod(@Req() request: RequestWithUser, @Param('id') id: string) {
+    return this.paymentsService.removeSavedMethod(request.user!.sub, id);
   }
 
   @Post()

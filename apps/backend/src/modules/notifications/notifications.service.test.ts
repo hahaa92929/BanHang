@@ -94,6 +94,47 @@ function createNotificationsMock() {
       updatedAt: new Date(),
     },
   ];
+  const pushSubscriptions = [
+    {
+      id: 'ps-1',
+      userId: 'u-1',
+      endpoint: 'https://push.example.com/subscriptions/existing',
+      p256dh: 'existing-p256dh-key',
+      auth: 'existing-auth-key',
+      userAgent: 'Chrome',
+      createdAt: new Date('2026-04-01T10:00:00.000Z'),
+      updatedAt: new Date('2026-04-01T10:00:00.000Z'),
+    },
+  ];
+  const cartItems = [
+    {
+      id: 'ci-1',
+      userId: 'u-1',
+      productId: 'p-1',
+      variantId: 'pv-1',
+      quantity: 2,
+      createdAt: new Date('2026-04-02T09:00:00.000Z'),
+      updatedAt: new Date('2026-04-02T09:00:00.000Z'),
+      variant: {
+        id: 'pv-1',
+        price: 20_000_000,
+      },
+    },
+    {
+      id: 'ci-2',
+      userId: 'u-2',
+      productId: 'p-2',
+      variantId: 'pv-2',
+      quantity: 1,
+      createdAt: new Date('2026-04-02T09:30:00.000Z'),
+      updatedAt: new Date('2026-04-02T09:30:00.000Z'),
+      variant: {
+        id: 'pv-2',
+        price: 5_000_000,
+      },
+    },
+  ];
+  const cartReminderEvents: Array<Record<string, unknown>> = [];
 
   function compareValue(actual: unknown, condition: unknown) {
     if (condition && typeof condition === 'object' && !Array.isArray(condition)) {
@@ -267,13 +308,83 @@ function createNotificationsMock() {
         return existing;
       },
     },
+    pushSubscription: {
+      findMany: async (args?: { where?: { userId?: string } }) =>
+        pushSubscriptions.filter((item) => (args?.where?.userId ? item.userId === args.where.userId : true)),
+      findUnique: async (args: { where: { endpoint: string } }) =>
+        pushSubscriptions.find((item) => item.endpoint === args.where.endpoint) ?? null,
+      findFirst: async (args: { where: { id?: string; userId?: string } }) =>
+        pushSubscriptions.find(
+          (item) =>
+            (args.where.id === undefined || item.id === args.where.id) &&
+            (args.where.userId === undefined || item.userId === args.where.userId),
+        ) ?? null,
+      create: async (args: { data: Record<string, unknown> }) => {
+        const created = {
+          id: `ps-${pushSubscriptions.length + 1}`,
+          createdAt: new Date(),
+          updatedAt: new Date(),
+          ...args.data,
+        };
+        pushSubscriptions.push(created as never);
+        return created;
+      },
+      update: async (args: { where: { endpoint: string }; data: Record<string, unknown> }) => {
+        const existing = pushSubscriptions.find((item) => item.endpoint === args.where.endpoint);
+        if (!existing) {
+          throw new Error('push subscription not found');
+        }
+        Object.assign(existing, args.data, { updatedAt: new Date() });
+        return existing;
+      },
+      delete: async (args: { where: { id: string } }) => {
+        const index = pushSubscriptions.findIndex((item) => item.id === args.where.id);
+        const [deleted] = pushSubscriptions.splice(index, 1);
+        return deleted;
+      },
+      count: async (args?: { where?: { userId?: string } }) =>
+        pushSubscriptions.filter((item) => (args?.where?.userId ? item.userId === args.where.userId : true)).length,
+    },
+    cartItem: {
+      findMany: async (args?: { where?: { updatedAt?: { lte?: Date } }; include?: { variant?: true } }) =>
+        cartItems
+          .filter((item) => {
+            const cutoff = args?.where?.updatedAt?.lte;
+            return cutoff ? item.updatedAt <= cutoff : true;
+          })
+          .map((item) => ({
+            ...item,
+            variant: args?.include?.variant ? item.variant : undefined,
+          })),
+    },
+    cartReminderEvent: {
+      findFirst: async (args: {
+        where: { userId: string; latestCartUpdatedAt: Date; channel: string };
+      }) =>
+        cartReminderEvents.find(
+          (item) =>
+            item.userId === args.where.userId &&
+            item.channel === args.where.channel &&
+            item.latestCartUpdatedAt instanceof Date &&
+            item.latestCartUpdatedAt.getTime() === args.where.latestCartUpdatedAt.getTime(),
+        ) ?? null,
+      create: async (args: { data: Record<string, unknown> }) => {
+        const created = {
+          id: `cre-${cartReminderEvents.length + 1}`,
+          createdAt: new Date(),
+          ...args.data,
+        };
+        cartReminderEvents.push(created);
+        return created;
+      },
+    },
     user: {
       findMany: async (args: { where: { id: { in: string[] } }; select: { id: true } }) =>
         users.filter((user) => args.where.id.in.includes(user.id)).map((user) => ({ id: user.id })),
     },
   };
 
-  return { prisma, notifications, preferences, templates, now };
+  return { prisma, notifications, preferences, templates, pushSubscriptions, cartReminderEvents, now };
 }
 
 test('notifications.list markRead trackClick and markAllRead cover user inbox flows', async () => {
@@ -329,7 +440,7 @@ test('notifications.preferences templates batch dispatch and unsubscribe cover a
     title: 'Weekend sale',
     content: 'Giam gia 20%',
     campaignKey: 'spring-sale',
-    scheduledFor: '2026-04-06T08:00:00.000Z',
+    scheduledFor: '2099-04-06T08:00:00.000Z',
   });
   const invisibleBeforeDispatch = await service.list('u-1', {});
   const scheduled = mock.notifications.find((item) => item.campaignKey === 'spring-sale');
@@ -369,5 +480,72 @@ test('notifications.preferences templates batch dispatch and unsubscribe cover a
   await assert.rejects(
     async () => service.previewTemplate('missing-template', {}),
     (error: unknown) => error instanceof NotFoundException,
+  );
+});
+
+test('notifications.push subscriptions list upsert and remove toggle push preference', async () => {
+  const mock = createNotificationsMock();
+  const service = new NotificationsService(mock.prisma as never);
+
+  const listed = await service.listPushSubscriptions('u-1');
+  const created = await service.savePushSubscription('u-1', {
+    endpoint: 'https://push.example.com/subscriptions/new',
+    p256dh: 'new-p256dh-key',
+    auth: 'new-auth-key',
+    userAgent: 'Firefox',
+  });
+  const updated = await service.savePushSubscription('u-1', {
+    endpoint: 'https://push.example.com/subscriptions/existing',
+    p256dh: 'existing-p256dh-key-updated',
+    auth: 'existing-auth-key-updated',
+    userAgent: 'Chrome 2',
+  });
+  const removedExisting = await service.removePushSubscription('u-1', 'ps-1');
+  const newId = created.data.id;
+  const removedNew = await service.removePushSubscription('u-1', newId);
+
+  assert.equal(listed.data.length, 1);
+  assert.equal(created.data.endpoint, 'https://push.example.com/subscriptions/new');
+  assert.equal(updated.data.userAgent, 'Chrome 2');
+  assert.deepEqual(removedExisting, { success: true, deletedId: 'ps-1', remaining: 1 });
+  assert.deepEqual(removedNew, { success: true, deletedId: newId, remaining: 0 });
+  assert.equal(mock.preferences.get('u-1')?.pushEnabled, false);
+
+  await assert.rejects(
+    async () => service.removePushSubscription('u-1', 'missing-subscription'),
+    (error: unknown) => error instanceof NotFoundException,
+  );
+});
+
+test('notifications.abandoned cart dispatch respects preferences and avoids duplicate reminders', async () => {
+  const mock = createNotificationsMock();
+  const service = new NotificationsService(mock.prisma as never);
+
+  await service.updatePreferences('u-1', {
+    marketingOptIn: true,
+    promotionEmail: true,
+  });
+
+  const first = await service.dispatchAbandonedCartReminders({
+    limit: 10,
+    idleMinutes: 60,
+    channel: 'email',
+  });
+  const second = await service.dispatchAbandonedCartReminders({
+    limit: 10,
+    idleMinutes: 60,
+    channel: 'email',
+  });
+
+  assert.equal(first.scanned, 2);
+  assert.equal(first.created, 1);
+  assert.equal(first.skipped, 1);
+  assert.deepEqual(first.userIds, ['u-1']);
+  assert.equal(second.created, 0);
+  assert.equal(second.skipped, 2);
+  assert.equal(mock.cartReminderEvents.length, 1);
+  assert.equal(
+    mock.notifications.some((item) => item.templateKey === 'cart.abandoned' && item.userId === 'u-1'),
+    true,
   );
 });

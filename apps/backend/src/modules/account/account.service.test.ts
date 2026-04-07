@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { NotFoundException, UnauthorizedException } from '@nestjs/common';
+import { BadRequestException, NotFoundException, UnauthorizedException } from '@nestjs/common';
 import { AccountService } from './account.service';
 
 function createAccountMock() {
@@ -13,10 +13,25 @@ function createAccountMock() {
       fullName: 'Nguyen Van A',
       phone: '0909123456',
       role: 'customer',
+      referralCode: 'REFA123',
       emailVerifiedAt: new Date('2026-04-01T00:00:00.000Z'),
       twoFactorEnabledAt: null,
       lastLoginAt: new Date('2026-04-05T08:00:00.000Z'),
       createdAt: new Date('2026-03-01T00:00:00.000Z'),
+      updatedAt: now,
+    },
+    {
+      id: 'u-2',
+      email: 'friend@example.com',
+      passwordHash: '$2b$12$5C8ORuDwWx.TWYJBr0GzDeP/MvVVTzRFvsAHoVrvO6P9xdWfmt3ZW',
+      fullName: 'Tran Thi B',
+      phone: null,
+      role: 'customer',
+      referralCode: 'FRIEND1',
+      emailVerifiedAt: new Date('2026-04-02T00:00:00.000Z'),
+      twoFactorEnabledAt: null,
+      lastLoginAt: null,
+      createdAt: new Date('2026-04-02T00:00:00.000Z'),
       updatedAt: now,
     },
   ];
@@ -169,6 +184,65 @@ function createAccountMock() {
       createdAt: now,
     },
   ];
+  const savedPaymentMethods = [
+    {
+      id: 'spm-1',
+      userId: 'u-1',
+      gateway: 'stripe',
+      method: 'stripe',
+      label: 'Visa ending 4242',
+      brand: 'Visa',
+      last4: '4242',
+      expiryMonth: 12,
+      expiryYear: 2030,
+      providerCustomerRef: 'cus_demo',
+      isDefault: true,
+      createdAt: now,
+      updatedAt: now,
+    },
+  ];
+  const coupons = [
+    {
+      id: 'coupon-loyal-1',
+      code: 'LOYAL-OLD',
+      type: 'fixed',
+      value: 50_000,
+      minOrderAmount: 0,
+      maxDiscount: null,
+      usageLimit: 1,
+      usedCount: 0,
+      startsAt: new Date('2026-04-01T00:00:00.000Z'),
+      expiresAt: new Date('2026-05-01T00:00:00.000Z'),
+      isActive: true,
+      createdAt: now,
+      updatedAt: now,
+    },
+  ];
+  const loyaltyRedemptions = [
+    {
+      id: 'lr-1',
+      userId: 'u-1',
+      couponId: 'coupon-loyal-1',
+      pointsSpent: 500,
+      discountAmount: 50_000,
+      createdAt: new Date('2026-04-05T06:00:00.000Z'),
+    },
+  ];
+  const referralEvents = [
+    {
+      id: 'ref-1',
+      referrerId: 'u-1',
+      referredUserId: 'u-2',
+      referralCode: 'REFA123',
+      status: 'rewarded',
+      rewardPoints: 200,
+      qualifiedOrderId: 'ord-1',
+      qualifiedAt: new Date('2026-04-05T01:00:00.000Z'),
+      rewardGrantedAt: new Date('2026-04-05T01:00:00.000Z'),
+      createdAt: new Date('2026-04-02T00:00:00.000Z'),
+      updatedAt: new Date('2026-04-05T01:00:00.000Z'),
+    },
+  ];
   const refreshSessions = [
     { id: 'sess-1', userId: 'u-1' },
   ];
@@ -280,8 +354,15 @@ function createAccountMock() {
   };
 
   const userDelegate = {
-    findUnique: async (args: { where: { id: string }; select?: Record<string, boolean> }) => {
-      const user = findUser(args.where.id);
+    findUnique: async (args: {
+      where: { id?: string; referralCode?: string };
+      select?: Record<string, boolean>;
+    }) => {
+      const user = args.where.id
+        ? findUser(args.where.id)
+        : args.where.referralCode
+          ? users.find((item) => item.referralCode === args.where.referralCode) ?? null
+          : null;
       return user ? selectFields(user, args.select) : null;
     },
     update: async (args: { where: { id: string }; data: Record<string, unknown>; select?: Record<string, boolean> }) => {
@@ -487,6 +568,16 @@ function createAccountMock() {
         }
         return rows;
       },
+      create: async (args: { data: Record<string, unknown> }) => {
+        const created = {
+          id: `n-${notifications.length + 1}`,
+          isRead: false,
+          createdAt: new Date(),
+          ...args.data,
+        };
+        notifications.push(created as never);
+        return created;
+      },
       deleteMany: deleteManyByUser(notifications),
     },
     product: {
@@ -541,6 +632,179 @@ function createAccountMock() {
         return { count };
       },
     },
+    coupon: {
+      findUnique: async (args: { where: { code?: string; id?: string }; select?: Record<string, boolean> }) => {
+        const coupon = args.where.id
+          ? coupons.find((item) => item.id === args.where.id) ?? null
+          : args.where.code
+            ? coupons.find((item) => item.code === args.where.code) ?? null
+            : null;
+        return coupon && args.select ? selectFields(coupon, args.select) : coupon;
+      },
+      create: async (args: { data: Record<string, unknown> }) => {
+        const created = {
+          id: `coupon-${coupons.length + 1}`,
+          maxDiscount: null,
+          usedCount: 0,
+          createdAt: new Date(),
+          updatedAt: new Date(),
+          ...args.data,
+        };
+        coupons.push(created as never);
+        return created;
+      },
+      updateMany: async (args: { where: { id: { in: string[] } }; data: { isActive: boolean } }) => {
+        let count = 0;
+        for (const coupon of coupons) {
+          if (args.where.id.in.includes(coupon.id)) {
+            Object.assign(coupon, args.data, { updatedAt: new Date() });
+            count += 1;
+          }
+        }
+        return { count };
+      },
+    },
+    loyaltyRedemption: {
+      findMany: async (args: {
+        where: { userId: string };
+        orderBy?: Array<{ createdAt?: 'asc' | 'desc' }>;
+        include?: { coupon?: { select: Record<string, boolean> } };
+      }) => {
+        const rows = [...loyaltyRedemptions]
+          .filter((item) => item.userId === args.where.userId)
+          .sort((left, right) => right.createdAt.getTime() - left.createdAt.getTime());
+
+        return rows.map((row) => ({
+          ...row,
+          ...(args.include?.coupon
+            ? {
+                coupon: selectFields(
+                  coupons.find((coupon) => coupon.id === row.couponId)!,
+                  args.include.coupon.select,
+                ),
+              }
+            : {}),
+        }));
+      },
+      create: async (args: { data: Record<string, unknown>; include?: { coupon?: true } }) => {
+        const created = {
+          id: `lr-${loyaltyRedemptions.length + 1}`,
+          createdAt: new Date(),
+          ...args.data,
+        };
+        loyaltyRedemptions.push(created as never);
+        return args.include?.coupon
+          ? {
+              ...created,
+              coupon: coupons.find((coupon) => coupon.id === created.couponId)!,
+            }
+          : created;
+      },
+      deleteMany: deleteManyByUser(loyaltyRedemptions),
+    },
+    savedPaymentMethod: {
+      findMany: async (args: {
+        where: { userId: string };
+        orderBy?: Array<{ isDefault?: 'asc' | 'desc'; createdAt?: 'asc' | 'desc' }>;
+        select?: Record<string, boolean>;
+      }) => {
+        const rows = [...savedPaymentMethods]
+          .filter((item) => item.userId === args.where.userId)
+          .sort(
+            (left, right) =>
+              Number(right.isDefault) - Number(left.isDefault) ||
+              right.createdAt.getTime() - left.createdAt.getTime(),
+          );
+
+        if (args.select) {
+          return rows.map((row) => selectFields(row, args.select));
+        }
+
+        return rows;
+      },
+      deleteMany: deleteManyByUser(savedPaymentMethods),
+    },
+    referralEvent: {
+      findMany: async (args: {
+        where: {
+          referrerId?: string;
+          status?: string;
+          OR?: Array<{ referrerId?: string; referredUserId?: string }>;
+        };
+        orderBy?: Array<
+          { createdAt?: 'asc' | 'desc'; rewardGrantedAt?: 'asc' | 'desc' }
+        >;
+        include?: { referrer?: { select: Record<string, boolean> }; referredUser?: { select: Record<string, boolean> } };
+      }) => {
+        let rows = [...referralEvents];
+        if (args.where.referrerId) {
+          rows = rows.filter((item) => item.referrerId === args.where.referrerId);
+        }
+        if (args.where.status) {
+          rows = rows.filter((item) => item.status === args.where.status);
+        }
+        if (args.where.OR?.length) {
+          rows = rows.filter((item) =>
+            args.where.OR!.some(
+              (clause) =>
+                (clause.referrerId ? item.referrerId === clause.referrerId : false) ||
+                (clause.referredUserId ? item.referredUserId === clause.referredUserId : false),
+            ),
+          );
+        }
+
+        const orderBy = args.orderBy ?? [];
+        rows.sort((left, right) => {
+          for (const order of orderBy) {
+            if (order.rewardGrantedAt) {
+              const leftValue = (left.rewardGrantedAt ?? left.createdAt).getTime();
+              const rightValue = (right.rewardGrantedAt ?? right.createdAt).getTime();
+              const diff =
+                order.rewardGrantedAt === 'asc' ? leftValue - rightValue : rightValue - leftValue;
+              if (diff !== 0) {
+                return diff;
+              }
+            }
+            if (order.createdAt) {
+              const diff =
+                order.createdAt === 'asc'
+                  ? left.createdAt.getTime() - right.createdAt.getTime()
+                  : right.createdAt.getTime() - left.createdAt.getTime();
+              if (diff !== 0) {
+                return diff;
+              }
+            }
+          }
+          return 0;
+        });
+
+        return rows.map((row) => ({
+          ...row,
+          ...(args.include?.referrer
+            ? { referrer: selectFields(findUser(row.referrerId)!, args.include.referrer.select) }
+            : {}),
+          ...(args.include?.referredUser
+            ? { referredUser: selectFields(findUser(row.referredUserId)!, args.include.referredUser.select) }
+            : {}),
+        }));
+      },
+      deleteMany: async (args: { where: { OR: Array<{ referrerId?: string; referredUserId?: string }> } }) => {
+        const originalLength = referralEvents.length;
+        for (let index = referralEvents.length - 1; index >= 0; index -= 1) {
+          const item = referralEvents[index];
+          if (
+            args.where.OR.some(
+              (clause) =>
+                (clause.referrerId && item?.referrerId === clause.referrerId) ||
+                (clause.referredUserId && item?.referredUserId === clause.referredUserId),
+            )
+          ) {
+            referralEvents.splice(index, 1);
+          }
+        }
+        return { count: originalLength - referralEvents.length };
+      },
+    },
     refreshSession: {
       deleteMany: deleteManyByUser(refreshSessions),
     },
@@ -561,7 +825,7 @@ function createAccountMock() {
         wishlistItem: { deleteMany: deleteManyByUser(wishlistItems) },
         cartItem: prisma.cartItem,
         cartCoupon: { deleteMany: deleteManyByUser(cartCoupons) },
-        notification: { deleteMany: deleteManyByUser(notifications) },
+        notification: prisma.notification,
         notificationPreference: {
           deleteMany: async (args: { where: { userId: string } }) => {
             const shouldDelete = notificationPreference?.userId === args.where.userId;
@@ -569,10 +833,14 @@ function createAccountMock() {
             return { count: shouldDelete ? 1 : 0 };
           },
         },
+        coupon: prisma.coupon,
+        loyaltyRedemption: prisma.loyaltyRedemption,
         refreshSession: { deleteMany: deleteManyByUser(refreshSessions) },
         passwordResetToken: { deleteMany: deleteManyByUser(passwordResetTokens) },
         emailVerificationToken: { deleteMany: deleteManyByUser(emailVerificationTokens) },
         socialAccount: { deleteMany: deleteManyByUser(socialAccounts) },
+        savedPaymentMethod: { deleteMany: deleteManyByUser(savedPaymentMethods) },
+        referralEvent: prisma.referralEvent,
         productVariant: prisma.productVariant,
         apiKey: {
           updateMany: async (args: { where: { userId: string; revokedAt: null }; data: { revokedAt: Date } }) => {
@@ -598,6 +866,10 @@ function createAccountMock() {
     cartCoupons,
     notifications,
     apiKeys,
+    coupons,
+    loyaltyRedemptions,
+    savedPaymentMethods,
+    referralEvents,
     refreshSessions,
     passwordResetTokens,
     emailVerificationTokens,
@@ -627,12 +899,16 @@ test('account.dashboard profile update and export aggregate customer data', asyn
   assert.equal(updated.fullName, 'Nguyen Van B');
   assert.equal(updated.phone, '0988000000');
   assert.equal(exported.profile.id, 'u-1');
+  assert.equal(exported.profile.referralCode, 'REFA123');
   assert.equal(exported.addresses.length, 2);
   assert.equal(exported.orders.length, 2);
   assert.equal(exported.wishlist.length, 1);
   assert.equal(exported.reviews.length, 1);
   assert.equal(exported.notifications.length, 2);
   assert.equal(exported.apiKeys.length, 1);
+  assert.equal(exported.savedPaymentMethods.length, 1);
+  assert.equal(exported.referralEvents.length, 1);
+  assert.equal(exported.loyaltyRedemptions.length, 1);
 
   await assert.rejects(
     async () => service.profile('missing-user'),
@@ -690,16 +966,57 @@ test('account.orders loyalty and reorder cover customer self-service flows', asy
 
   assert.equal(orders.total, 1);
   assert.equal(orders.data[0]?.orderNumber, 'ORD-1');
-  assert.equal(loyalty.pointsBalance, 1500);
-  assert.equal(loyalty.totalEarned, 1500);
-  assert.equal(loyalty.totalRedeemed, 0);
+  assert.equal(loyalty.pointsBalance, 1200);
+  assert.equal(loyalty.totalEarned, 1700);
+  assert.equal(loyalty.totalRedeemed, 500);
   assert.equal(loyalty.tier, 'Silver');
-  assert.equal(loyalty.history[0]?.orderNumber, 'ORD-1');
+  assert.equal(loyalty.history.some((item) => item.source === 'referral' && item.points === 200), true);
+  assert.equal(loyalty.history.some((item) => item.source === 'voucher' && item.points === 500), true);
   assert.equal(reorder.success, true);
   assert.equal(reorder.addedItems, 1);
   assert.equal(reorder.skippedItems.length, 0);
   assert.equal(reorder.cartTotalItems, 2);
   assert.equal(mock.cartItems.find((item) => item.variantId === 'pv-1')?.quantity, 2);
+});
+
+test('account.referral exposes referral link stats and supports code regeneration', async () => {
+  const mock = createAccountMock();
+  const service = new AccountService(mock.prisma as never);
+
+  const referral = await service.referral('u-1');
+  const regenerated = await service.regenerateReferralCode('u-1');
+
+  assert.equal(referral.referralCode, 'REFA123');
+  assert.equal(referral.totalSignups, 1);
+  assert.equal(referral.rewardedCount, 1);
+  assert.equal(referral.totalRewardPoints, 200);
+  assert.match(referral.referralLink, /\/register\?ref=REFA123$/);
+  assert.equal(regenerated.referralCode === 'REFA123', false);
+  assert.equal(mock.users.find((user) => user.id === 'u-1')?.referralCode, regenerated.referralCode);
+});
+
+test('account.redeemLoyalty creates a single-use coupon from available points', async () => {
+  const mock = createAccountMock();
+  const service = new AccountService(mock.prisma as never);
+
+  const redeemed = await service.redeemLoyalty('u-1', { points: 500 });
+
+  assert.equal(redeemed.success, true);
+  assert.equal(redeemed.redemption.pointsSpent, 500);
+  assert.equal(redeemed.redemption.discountAmount, 50_000);
+  assert.match(redeemed.redemption.coupon.code, /^LOYAL-/);
+  assert.equal(redeemed.loyalty.pointsBalance, 700);
+  assert.equal(mock.loyaltyRedemptions.length, 2);
+  assert.equal(mock.coupons.length, 2);
+  assert.equal(
+    mock.notifications.some((item) => item.userId === 'u-1' && (item as any).title === 'Loyalty voucher created'),
+    true,
+  );
+
+  await assert.rejects(
+    async () => service.redeemLoyalty('u-1', { points: 400 }),
+    (error: unknown) => error instanceof BadRequestException,
+  );
 });
 
 test('account.deleteAccount anonymizes user and clears personal side data', async () => {
@@ -722,6 +1039,10 @@ test('account.deleteAccount anonymizes user and clears personal side data', asyn
   assert.equal(mock.cartItems.length, 0);
   assert.equal(mock.cartCoupons.length, 0);
   assert.equal(mock.notifications.length, 0);
+  assert.equal(mock.savedPaymentMethods.length, 0);
+  assert.equal(mock.referralEvents.length, 0);
+  assert.equal(mock.loyaltyRedemptions.length, 0);
+  assert.equal(mock.coupons[0]?.isActive, false);
   assert.equal(mock.refreshSessions.length, 0);
   assert.equal(mock.passwordResetTokens.length, 0);
   assert.equal(mock.emailVerificationTokens.length, 0);

@@ -11,10 +11,11 @@ Monorepo theo stack trong runbook:
 - Auth: guest session, login, register, social login, guest cart merge on login/register/social, TOTP 2FA enable/verify, API key management, refresh, me, logout, session list/revoke, forgot password, reset password, request email verification, verify email
 - Catalog: category tree, brand list, product listing/filtering, product detail by id/slug, admin CRUD, bulk import/export, product media, product reviews, product variants with warehouse stock breakdown
 - Cart: add/update/remove item, clear, merge anonymous cart payload, apply/remove coupon, save for later, variant-aware cart lines
+- Compare: server-side compare list with max 4 products and differing field hints
 - Wishlist: list, add, remove saved products
 - Orders: reservation, checkout, order list/detail, cancel, return request, invoice, tracking, admin status flow with variant-aware reservation and order items
 - Payments: method list, initiate payment, payment status, refund, idempotent webhook handling, VNPay signed checkout URL integration
-- Extra modules: inventory with warehouse-level adjustments, transfers, and low-stock checks, shipping, notifications, reporting breakdowns
+- Extra modules: CRM customer management, content CMS, inventory with warehouse-level adjustments, transfers, and low-stock checks, shipping, store locator, notifications, reporting breakdowns
 - Delivery: generated Prisma migration SQL, OpenAPI spec, structured request logging, backend test suite
 
 ## Demo accounts
@@ -111,6 +112,13 @@ Catalog:
 - `POST /api/v1/products/:idOrSlug/reviews/:reviewId/helpful`
 - `PATCH /api/v1/products/:idOrSlug/reviews/:reviewId/reply`
 - `PATCH /api/v1/products/:idOrSlug/reviews/:reviewId/status`
+- `GET /api/v1/products/:idOrSlug/questions`
+- `POST /api/v1/products/:idOrSlug/questions`
+- `POST /api/v1/products/:idOrSlug/questions/:questionId/upvote`
+- `PATCH /api/v1/products/:idOrSlug/questions/:questionId/answer`
+- `GET /api/v1/products/:idOrSlug/price-history`
+- `POST /api/v1/products/:idOrSlug/price-alert`
+- `DELETE /api/v1/products/:idOrSlug/price-alert`
 
 Cart and checkout:
 - `GET /api/v1/cart`
@@ -122,9 +130,18 @@ Cart and checkout:
 - `DELETE /api/v1/cart/coupon`
 - `POST /api/v1/cart/save-for-later/:productId`
 - `DELETE /api/v1/cart/clear`
+- `GET /api/v1/compare`
+- `POST /api/v1/compare/items`
+- `DELETE /api/v1/compare/items/:productId`
+- `DELETE /api/v1/compare/clear`
 - `GET /api/v1/wishlist`
 - `POST /api/v1/wishlist/items`
 - `DELETE /api/v1/wishlist/items/:productId`
+- `POST /api/v1/wishlist/items/:productId/move-to-cart`
+- `GET /api/v1/wishlist/share/current`
+- `POST /api/v1/wishlist/share`
+- `POST /api/v1/wishlist/share/regenerate`
+- `GET /api/v1/wishlist/shared/:token`
 - `GET /api/v1/orders/reservations/current`
 - `POST /api/v1/orders/reservations`
 - `POST /api/v1/orders/reservations/:id/cancel`
@@ -135,6 +152,9 @@ Customer account:
 - `GET /api/v1/account/orders`
 - `POST /api/v1/account/orders/:id/reorder`
 - `GET /api/v1/account/loyalty`
+- `POST /api/v1/account/loyalty/redeem`
+- `GET /api/v1/account/referral`
+- `POST /api/v1/account/referral/regenerate`
 - `GET /api/v1/account/profile`
 - `PATCH /api/v1/account/profile`
 - `GET /api/v1/account/addresses`
@@ -145,15 +165,50 @@ Customer account:
 - `GET /api/v1/account/export`
 - `DELETE /api/v1/account`
 
+CRM and admin customers:
+- `GET /api/v1/crm/customers`
+- `GET /api/v1/crm/customers/export`
+- `GET /api/v1/crm/customers/:id`
+- `POST /api/v1/crm/customers/:id/notes`
+- `DELETE /api/v1/crm/customers/:id/notes/:noteId`
+- `POST /api/v1/crm/customers/:id/tags`
+- `DELETE /api/v1/crm/customers/:id/tags/:tagId`
+
+Content and store locator:
+- `GET /api/v1/content/pages`
+- `GET /api/v1/content/pages/:slug`
+- `POST /api/v1/content/pages`
+- `PATCH /api/v1/content/pages/:id`
+- `GET /api/v1/content/blog`
+- `GET /api/v1/content/blog/:slug`
+- `POST /api/v1/content/blog`
+- `PATCH /api/v1/content/blog/:id`
+- `GET /api/v1/content/promotions`
+- `POST /api/v1/content/newsletter/subscribe`
+- `POST /api/v1/content/newsletter/confirm`
+- `POST /api/v1/content/newsletter/unsubscribe`
+- `POST /api/v1/content/promotions`
+- `PATCH /api/v1/content/promotions/:id`
+- `GET /api/v1/stores`
+- `GET /api/v1/stores/nearest`
+- `GET /api/v1/stores/:idOrSlug`
+- `POST /api/v1/stores/:idOrSlug/appointments`
+
 Orders and payments:
 - `GET /api/v1/orders`
 - `GET /api/v1/orders/:id`
+- `GET /api/v1/orders/:id/notes`
+- `POST /api/v1/orders/:id/notes`
 - `GET /api/v1/orders/:id/invoice`
 - `GET /api/v1/orders/:id/tracking`
 - `POST /api/v1/orders/:id/cancel`
 - `POST /api/v1/orders/:id/return`
 - `PATCH /api/v1/orders/:id/status`
 - `GET /api/v1/payments/methods`
+- `GET /api/v1/payments/saved-methods`
+- `POST /api/v1/payments/saved-methods`
+- `POST /api/v1/payments/saved-methods/:id/default`
+- `DELETE /api/v1/payments/saved-methods/:id`
 - `POST /api/v1/payments`
 - `GET /api/v1/payments/:id`
 - `POST /api/v1/payments/:id/refund`
@@ -179,12 +234,16 @@ Ops and admin:
 - `GET /api/v1/notifications/preferences/current`
 - `PATCH /api/v1/notifications/preferences/current`
 - `POST /api/v1/notifications/preferences/unsubscribe`
+- `GET /api/v1/notifications/push/subscriptions`
+- `POST /api/v1/notifications/push/subscriptions`
+- `DELETE /api/v1/notifications/push/subscriptions/:id`
 - `GET /api/v1/notifications/templates/list`
 - `POST /api/v1/notifications/templates`
 - `PATCH /api/v1/notifications/templates/:id`
 - `POST /api/v1/notifications/templates/:id/preview`
 - `POST /api/v1/notifications/batch`
 - `POST /api/v1/notifications/dispatch`
+- `POST /api/v1/notifications/dispatch/abandoned-cart`
 - `GET /api/v1/reporting/summary`
 - `GET /api/v1/reporting/revenue`
 - `GET /api/v1/reporting/top-products`
@@ -199,28 +258,44 @@ Ops and admin:
 Catalog and inventory notes:
 - `POST /api/v1/products` va `PATCH /api/v1/products/:id` co the nhan `variants[]` voi `warehouseStocks[]` de tao cap nhat ton kho theo warehouse.
 - Review public query ho tro them `verifiedOnly=true` va `withMedia=true`; admin co moderation queue rieng va co the `publish/reject/pending` review.
+- Product detail Q&A da co `GET/POST /api/v1/products/:idOrSlug/questions`, `POST /upvote`, va `PATCH /answer` de support hoi dap, search cau hoi, va admin tra loi.
+- Product detail da co `GET /api/v1/products/:idOrSlug/price-history` cho chart lich su gia, va customer dang nhap co the `POST/DELETE /api/v1/products/:idOrSlug/price-alert` de nhan thong bao khi gia giam.
 - `POST /api/v1/cart/items` va `POST /api/v1/cart/merge` co the nhan them `variantId`; `PATCH/DELETE /api/v1/cart/items/:productId` va `POST /api/v1/cart/save-for-later/:productId` ho tro `?variantId=` khi cung product co nhieu dong cart.
+- Compare module da co server-side compare list toi da 4 san pham, tra kem `differingFields` de frontend render compare table/bar nhanh hon.
 - `POST /api/v1/inventory/adjust` nhan them `variantId` va `warehouseCode` de dieu chinh ton kho o dung bien the va kho.
 - `POST /api/v1/inventory/transfer` chuyen ton kho `available` giua 2 warehouse cho cung product/variant ma khong doi tong stock aggregate.
 - `GET /api/v1/inventory/:sku` ho tro parent product SKU hoac variant SKU de tra ve tong ton va breakdown theo warehouse.
 - Reservation va order item gio luu `variantId` va `variant SKU`, nen checkout/cancel/release stock theo dung variant thay vi chi theo product aggregate.
+- Orders module co them `GET/POST /api/v1/orders/:id/notes`; staff/admin co the tao note `internal` hoac `customer`, con customer chi thay va tao note `customer-facing`.
 - `POST /api/v1/shipping/calculate` ho tro them `carrier`, `district`, `weightGrams` va tra ve nhieu quote theo provider.
 - `POST /api/v1/shipping/create` co the chon `carrier/serviceCode`; backend luu carrier, service code, label URL, va tao shipment tracking timeline theo order.
 - `POST /api/v1/shipping/:id/events` cho phep staff/admin append tracking event de dong bo trang thai van chuyen va thong bao in-app.
 - Notifications co them template CRUD, batch campaign, scheduled dispatch, va unsubscribe handling; notification duoc schedule se an khoi inbox cho toi khi den han dispatch.
-- Account module co dashboard summary, order history filter/search, one-click reorder, loyalty summary, profile update, address book CRUD, data export, va `DELETE /api/v1/account` de anonymize tai khoan theo huong GDPR-style self-service.
+- Notifications co them Web Push subscription CRUD de frontend luu endpoint/key cua browser va dong bo `pushEnabled` theo thiet bi dang subscribe.
+- Notifications co them `POST /api/v1/notifications/dispatch/abandoned-cart` de quet server-side carts bi bo quen va tao reminder theo preference `promotionEmail/marketingOptIn`, co dedupe theo lan cap nhat gio hang gan nhat.
+- Wishlist list hien tra kem `priceAlert` dang active cua tung product de frontend hien thi muc gia muc tieu va trang thai da notify.
+- Wishlist co them `POST /api/v1/wishlist/items/:productId/move-to-cart` de day nhanh item da save vao cart bang default variant purchasable.
+- Wishlist da co share link server-side: customer co the tao/rotate link qua `POST /api/v1/wishlist/share` va public co the xem `GET /api/v1/wishlist/shared/:token` ma khong can dang nhap.
+- Account module co dashboard summary, order history filter/search, one-click reorder, loyalty summary, loyalty voucher redeem, profile update, address book CRUD, data export, va `DELETE /api/v1/account` de anonymize tai khoan theo huong GDPR-style self-service.
+- Account module co them referral summary/regenerate code; loyalty history hien gom ca diem tu completed orders va referral rewards.
+- CRM module co customer list/detail cho admin, segmentation dong (`vip/new/at_risk/inactive/active`), internal notes, tags, va export payload de noi voi dashboard/ops tooling.
 - Search module co full-text query/facets, autocomplete, trending keywords, fuzzy typo suggestion, analytics zero-result, va recent search history cho customer da dang nhap.
+- Content module co static pages, blog posts, va promotion/banner campaigns de cap data cho homepage, blog/news, FAQ/policy, va admin CMS workflows.
+- Content module co them newsletter subscription flow voi double opt-in confirm/unsubscribe de frontend dung cho newsletter signup form ma khong can tu bo sung backend rieng.
+- Store locator module co list/filter theo khu vuc-dich vu, nearest store theo toa do, detail by slug, va appointment booking cho pickup/showroom support.
 
 Auth notes:
 - `POST /api/v1/auth/guest` tao guest bearer token de guest dung cart, reservation, va checkout flow ma khong can dang ky.
 - `POST /api/v1/auth/login`, `POST /api/v1/auth/register`, va `POST /api/v1/auth/social/:provider` nhan them `guestAccessToken` de merge guest cart/wishlist/reservation/order context vao account that.
+- `POST /api/v1/auth/register` va `POST /api/v1/auth/social/:provider` nhan them `referralCode`; backend track signup theo ma gioi thieu va tu dong reward khi don completed dau tien cua referred customer duoc chot.
 - `POST /api/v1/auth/login` nhan them `otp` khi account da bat 2FA.
 - Auth payload gio tra them `csrfToken`; backend set refresh cookie + CSRF cookie cho flow refresh/logout qua cookie, va van giu body token de backward compatible.
 - Access token dung `JWT_SECRET` theo HS256 o non-production, va production bat buoc dung RS256 khi ban cung cap ca `JWT_PRIVATE_KEY` va `JWT_PUBLIC_KEY`.
 - `GET /api/v1/reporting/summary` chap nhan Bearer token hoac `x-api-key` cho integration read-only theo permission cua key.
 
 Payments and reporting notes:
-- `POST /api/v1/payments` co the nhan them `returnUrl`, `ipAddress`, `locale`; neu method la `vnpay` va env day du, backend tra signed VNPay checkout URL thay vi redirect placeholder.
+- `POST /api/v1/payments` co the nhan them `returnUrl`, `ipAddress`, `locale`, va `savedPaymentMethodId`; neu method la `vnpay` va env day du, backend tra signed VNPay checkout URL thay vi redirect placeholder.
+- Payments module co them saved payment method CRUD cho customer de tai su dung token/card reference trong checkout sau.
 - Reporting module ngoai `summary` da co them revenue by day, top products, va coupon usage breakdown cho dashboard/admin integrations.
 
 ## Docs

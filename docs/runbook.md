@@ -171,10 +171,8 @@ Trang chủ → Duyệt danh mục → Tìm kiếm/Lọc sản phẩm → Xem ch
    └─────────────┘
 ```
 
-#### Mermaid diagram cập nhật theo source code hiện tại
+#### Microservices architecture
 
-> Bản Mermaid bám theo repo hiện tại được lưu tại [architecture.md](./architecture.md).  
-> Lưu ý: source code hiện tại đang triển khai theo mô hình **NestJS modular monolith**, còn sơ đồ bên dưới thể hiện **target microservices architecture** để tách service về sau.
 
 ```mermaid
 flowchart TB

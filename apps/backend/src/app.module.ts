@@ -15,6 +15,9 @@ import { validateEnv } from './config/env';
 import { PrismaModule } from './infra/prisma/prisma.module';
 import { AuthModule } from './modules/auth/auth.module';
 import { CartModule } from './modules/cart/cart.module';
+import { CompareModule } from './modules/compare/compare.module';
+import { ContentModule } from './modules/content/content.module';
+import { CrmModule } from './modules/crm/crm.module';
 import { InventoryModule } from './modules/inventory/inventory.module';
 import { NotificationsModule } from './modules/notifications/notifications.module';
 import { OrdersModule } from './modules/orders/orders.module';
@@ -23,6 +26,7 @@ import { ProductsModule } from './modules/products/products.module';
 import { ReportingModule } from './modules/reporting/reporting.module';
 import { SearchModule } from './modules/search/search.module';
 import { ShippingModule } from './modules/shipping/shipping.module';
+import { StoresModule } from './modules/stores/stores.module';
 import { WishlistModule } from './modules/wishlist/wishlist.module';
 
 @Module({
@@ -44,12 +48,16 @@ import { WishlistModule } from './modules/wishlist/wishlist.module';
     PrismaModule,
     AccountModule,
     AuthModule,
+    ContentModule,
+    CrmModule,
     ProductsModule,
     CartModule,
+    CompareModule,
     OrdersModule,
     PaymentsModule,
     InventoryModule,
     ShippingModule,
+    StoresModule,
     NotificationsModule,
     ReportingModule,
     SearchModule,

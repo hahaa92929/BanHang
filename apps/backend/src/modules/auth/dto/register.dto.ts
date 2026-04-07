@@ -21,4 +21,9 @@ export class RegisterDto {
   @IsString()
   @MinLength(20)
   guestAccessToken?: string;
+
+  @IsOptional()
+  @IsString()
+  @MinLength(4)
+  referralCode?: string;
 }

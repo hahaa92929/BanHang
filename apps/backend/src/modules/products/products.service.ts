@@ -4,15 +4,19 @@ import { generateId } from '../../common/security';
 import { slugify } from '../../common/slug';
 import { PrismaService } from '../../infra/prisma/prisma.service';
 import { AddProductMediaDto } from './dto/add-product-media.dto';
+import { CreateQuestionDto } from './dto/create-question.dto';
 import { CreateReviewDto } from './dto/create-review.dto';
 import { CreateBrandDto } from './dto/create-brand.dto';
 import { CreateCategoryDto } from './dto/create-category.dto';
 import { CreateProductDto } from './dto/create-product.dto';
 import { ImportProductsDto } from './dto/import-products.dto';
 import { ModerateReviewDto } from './dto/moderate-review.dto';
+import { QueryPriceHistoryDto } from './dto/query-price-history.dto';
 import { QueryProductsDto } from './dto/query-products.dto';
+import { QueryQuestionsDto } from './dto/query-questions.dto';
 import { QueryReviewsDto } from './dto/query-reviews.dto';
 import { ProductVariantDto } from './dto/product-variant.dto';
+import { SetPriceAlertDto } from './dto/set-price-alert.dto';
 import { UpdateProductDto } from './dto/update-product.dto';
 
 @Injectable()
@@ -559,6 +563,316 @@ export class ProductsService {
     return updated;
   }
 
+  async listQuestions(idOrSlug: string, query: QueryQuestionsDto) {
+    const product = await this.findRequiredProductByReference(idOrSlug);
+    const page = query.page ?? 1;
+    const limit = query.limit ?? 10;
+    const keyword = query.q?.trim();
+    const where: Prisma.ProductQuestionWhereInput = {
+      productId: product.id,
+      status: 'published',
+      ...(query.answeredOnly ? { answer: { not: null } } : {}),
+      ...(query.unansweredOnly ? { answer: null } : {}),
+      ...(keyword
+        ? {
+            OR: [
+              { question: { contains: keyword, mode: 'insensitive' } },
+              { answer: { contains: keyword, mode: 'insensitive' } },
+            ],
+          }
+        : {}),
+    };
+
+    const total = await this.prisma.productQuestion.count({ where });
+    const totalPages = Math.max(1, Math.ceil(total / limit));
+    const safePage = Math.min(page, totalPages);
+    const skip = (safePage - 1) * limit;
+    const orderBy = this.resolveQuestionOrderBy(query.sort);
+
+    const [data, answeredCount] = await Promise.all([
+      this.prisma.productQuestion.findMany({
+        where,
+        orderBy,
+        skip,
+        take: limit,
+        include: {
+          user: {
+            select: {
+              id: true,
+              fullName: true,
+            },
+          },
+          answeredBy: {
+            select: {
+              id: true,
+              fullName: true,
+            },
+          },
+        },
+      }),
+      this.prisma.productQuestion.count({
+        where: {
+          productId: product.id,
+          status: 'published',
+          answer: { not: null },
+        },
+      }),
+    ]);
+
+    return {
+      productId: product.id,
+      total,
+      page: safePage,
+      limit,
+      totalPages,
+      summary: {
+        answeredCount,
+        unansweredCount: Math.max(0, total - answeredCount),
+      },
+      data,
+    };
+  }
+
+  async listPriceHistory(idOrSlug: string, query: QueryPriceHistoryDto = {}) {
+    const product = await this.findRequiredProductByReference(idOrSlug);
+    const limit = query.limit ?? 30;
+    const changedAt =
+      query.days !== undefined
+        ? {
+            gte: new Date(Date.now() - query.days * 24 * 60 * 60 * 1000),
+          }
+        : undefined;
+
+    const data = await this.prisma.productPriceHistory.findMany({
+      where: {
+        productId: product.id,
+        ...(changedAt ? { changedAt } : {}),
+      },
+      orderBy: { changedAt: 'desc' },
+      take: limit,
+    });
+
+    const prices = data.length ? data.map((item) => item.price) : [product.price];
+
+    return {
+      productId: product.id,
+      currentPrice: product.price,
+      totalChanges: data.length,
+      lowestPrice: Math.min(...prices),
+      highestPrice: Math.max(...prices),
+      data: data.map((item) => ({
+        id: item.id,
+        price: item.price,
+        previousPrice: item.previousPrice,
+        source: item.source,
+        changedAt: item.changedAt,
+        changeAmount: item.previousPrice === null || item.previousPrice === undefined ? null : item.price - item.previousPrice,
+      })),
+    };
+  }
+
+  async createQuestion(userId: string, idOrSlug: string, payload: CreateQuestionDto) {
+    const product = await this.findRequiredProductByReference(idOrSlug);
+
+    if (product.status !== ProductStatus.active) {
+      throw new NotFoundException('Product not found');
+    }
+
+    return this.prisma.productQuestion.create({
+      data: {
+        userId,
+        productId: product.id,
+        question: payload.question,
+      },
+      include: {
+        user: {
+          select: {
+            id: true,
+            fullName: true,
+          },
+        },
+        answeredBy: {
+          select: {
+            id: true,
+            fullName: true,
+          },
+        },
+      },
+    });
+  }
+
+  async upvoteQuestion(userId: string, idOrSlug: string, questionId: string) {
+    const product = await this.findRequiredProductByReference(idOrSlug);
+
+    const question = await this.prisma.productQuestion.findFirst({
+      where: {
+        id: questionId,
+        productId: product.id,
+        status: 'published',
+      },
+      select: {
+        id: true,
+        userId: true,
+        upvoteCount: true,
+      },
+    });
+
+    if (!question) {
+      throw new NotFoundException('Question not found');
+    }
+
+    if (question.userId === userId) {
+      throw new BadRequestException('Cannot upvote your own question');
+    }
+
+    const existingVote = await this.prisma.productQuestionUpvote.findUnique({
+      where: {
+        userId_questionId: {
+          userId,
+          questionId: question.id,
+        },
+      },
+    });
+
+    if (existingVote) {
+      return {
+        success: true,
+        applied: false,
+        upvoteCount: question.upvoteCount,
+      };
+    }
+
+    const updated = await this.prisma.$transaction(async (tx) => {
+      await tx.productQuestionUpvote.create({
+        data: {
+          userId,
+          questionId: question.id,
+        },
+      });
+
+      return tx.productQuestion.update({
+        where: { id: question.id },
+        data: {
+          upvoteCount: {
+            increment: 1,
+          },
+        },
+        select: {
+          upvoteCount: true,
+        },
+      });
+    });
+
+    return {
+      success: true,
+      applied: true,
+      upvoteCount: updated.upvoteCount,
+    };
+  }
+
+  async answerQuestion(actorId: string, idOrSlug: string, questionId: string, answer: string) {
+    const product = await this.findRequiredProductByReference(idOrSlug);
+
+    const question = await this.prisma.productQuestion.findFirst({
+      where: {
+        id: questionId,
+        productId: product.id,
+      },
+      select: {
+        id: true,
+      },
+    });
+
+    if (!question) {
+      throw new NotFoundException('Question not found');
+    }
+
+    return this.prisma.productQuestion.update({
+      where: { id: question.id },
+      data: {
+        answer,
+        answeredAt: new Date(),
+        answeredById: actorId,
+        status: 'published',
+      },
+      include: {
+        user: {
+          select: {
+            id: true,
+            fullName: true,
+          },
+        },
+        answeredBy: {
+          select: {
+            id: true,
+            fullName: true,
+          },
+        },
+      },
+    });
+  }
+
+  async setPriceAlert(userId: string, idOrSlug: string, payload: SetPriceAlertDto) {
+    const product = await this.findRequiredProductByReference(idOrSlug);
+
+    if (product.status !== ProductStatus.active) {
+      throw new NotFoundException('Product not found');
+    }
+
+    const alert = await this.prisma.priceAlert.upsert({
+      where: {
+        userId_productId: {
+          userId,
+          productId: product.id,
+        },
+      },
+      create: {
+        userId,
+        productId: product.id,
+        targetPrice: payload.targetPrice ?? null,
+        isActive: true,
+      },
+      update: {
+        targetPrice: payload.targetPrice ?? null,
+        isActive: true,
+        lastNotifiedPrice: null,
+      },
+      select: {
+        id: true,
+        targetPrice: true,
+        isActive: true,
+        lastNotifiedPrice: true,
+        createdAt: true,
+        updatedAt: true,
+      },
+    });
+
+    return {
+      success: true,
+      productId: product.id,
+      alert,
+    };
+  }
+
+  async removePriceAlert(userId: string, idOrSlug: string) {
+    const product = await this.findRequiredProductByReference(idOrSlug);
+
+    await this.prisma.priceAlert.updateMany({
+      where: {
+        userId,
+        productId: product.id,
+      },
+      data: {
+        isActive: false,
+      },
+    });
+
+    return {
+      success: true,
+      productId: product.id,
+    };
+  }
+
   async createProduct(payload: CreateProductDto) {
     const categoryId = await this.resolveCategoryId(payload.categorySlug);
     const brandId = await this.resolveBrandId(payload.brandSlug);
@@ -592,6 +906,7 @@ export class ProductsService {
       });
 
       await this.createVariantsInTx(tx, product.id, normalizedVariants);
+      await this.recordPriceHistoryInTx(tx, product.id, product.price, null, 'create');
 
       return tx.product.findUnique({
         where: { id: product.id },
@@ -659,6 +974,16 @@ export class ProductsService {
           metaDescription: payload.metaDescription,
         },
       });
+      await this.recordPriceHistoryInTx(tx, id, price ?? existing.price, existing.price, 'admin_update');
+      await this.notifyPriceDropInTx(
+        tx,
+        {
+          id,
+          name: payload.name ?? existing.name,
+          price: price ?? existing.price,
+        },
+        existing.price,
+      );
 
       return tx.product.findUnique({
         where: { id },
@@ -753,6 +1078,84 @@ export class ProductsService {
     }
   }
 
+  private async recordPriceHistoryInTx(
+    tx: Prisma.TransactionClient,
+    productId: string,
+    nextPrice: number,
+    previousPrice: number | null,
+    source: string,
+  ) {
+    if (previousPrice !== null && previousPrice === nextPrice) {
+      return;
+    }
+
+    await tx.productPriceHistory.create({
+      data: {
+        productId,
+        price: nextPrice,
+        previousPrice,
+        source,
+      },
+    });
+  }
+
+  private async notifyPriceDropInTx(
+    tx: Prisma.TransactionClient,
+    product: { id: string; name: string; price: number },
+    previousPrice: number,
+  ) {
+    if (product.price >= previousPrice) {
+      return;
+    }
+
+    const alerts = await tx.priceAlert.findMany({
+      where: {
+        productId: product.id,
+        isActive: true,
+      },
+      select: {
+        id: true,
+        userId: true,
+        targetPrice: true,
+        lastNotifiedPrice: true,
+      },
+    });
+
+    const eligible = alerts.filter(
+      (alert) =>
+        (alert.targetPrice === null || product.price <= alert.targetPrice) &&
+        (alert.lastNotifiedPrice === null || product.price < alert.lastNotifiedPrice),
+    );
+
+    for (const alert of eligible) {
+      await tx.notification.create({
+        data: {
+          userId: alert.userId,
+          type: 'promotion',
+          title: 'Price dropped',
+          content: `${product.name} is now ${product.price} VND.`,
+          data: {
+            productId: product.id,
+            currentPrice: product.price,
+            previousPrice,
+            targetPrice: alert.targetPrice,
+          },
+        },
+      });
+    }
+
+    if (eligible.length) {
+      await tx.priceAlert.updateMany({
+        where: {
+          id: { in: eligible.map((alert) => alert.id) },
+        },
+        data: {
+          lastNotifiedPrice: product.price,
+        },
+      });
+    }
+  }
+
   private async refreshReviewStats(productId: string) {
     const publishedReviews = await this.prisma.review.findMany({
       where: {
@@ -791,6 +1194,25 @@ export class ProductsService {
         break;
       case 'rating_desc':
         orderBy = [{ rating: 'desc' }, { createdAt: 'desc' }];
+        break;
+      case 'recent':
+      default:
+        orderBy = [{ createdAt: 'desc' }];
+        break;
+    }
+
+    return orderBy;
+  }
+
+  private resolveQuestionOrderBy(sort?: QueryQuestionsDto['sort']) {
+    let orderBy: Prisma.ProductQuestionOrderByWithRelationInput[] = [{ createdAt: 'desc' }];
+
+    switch (sort) {
+      case 'helpful':
+        orderBy = [{ upvoteCount: 'desc' }, { createdAt: 'desc' }];
+        break;
+      case 'answered':
+        orderBy = [{ answeredAt: 'desc' }, { createdAt: 'desc' }];
         break;
       case 'recent':
       default:

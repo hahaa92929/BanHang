@@ -5,11 +5,17 @@ import { PrismaService } from '../../infra/prisma/prisma.service';
 import { CreateAddressDto } from './dto/create-address.dto';
 import { DeleteAccountDto } from './dto/delete-account.dto';
 import { QueryAccountOrdersDto } from './dto/query-account-orders.dto';
+import { RedeemLoyaltyDto } from './dto/redeem-loyalty.dto';
 import { UpdateAddressDto } from './dto/update-address.dto';
 import { UpdateProfileDto } from './dto/update-profile.dto';
 
 @Injectable()
 export class AccountService {
+  private readonly loyaltyRedeemRate = 100;
+  private readonly loyaltyMinRedeemPoints = 500;
+  private readonly loyaltyRedeemStep = 100;
+  private readonly loyaltyCouponTtlDays = 30;
+
   constructor(private readonly prisma: PrismaService) {}
 
   async dashboard(userId: string) {
@@ -239,42 +245,130 @@ export class AccountService {
 
   async loyalty(userId: string) {
     await this.ensureUser(userId);
+    return this.buildLoyaltySummary(this.prisma, userId);
+  }
 
-    const completedOrders = await this.prisma.order.findMany({
-      where: {
-        userId,
-        status: 'completed',
-      },
-      orderBy: [{ completedAt: 'desc' }, { createdAt: 'desc' }],
-      select: {
-        id: true,
-        orderNumber: true,
-        total: true,
-        completedAt: true,
-        createdAt: true,
-      },
-    });
+  async redeemLoyalty(userId: string, payload: RedeemLoyaltyDto) {
+    await this.ensureUser(userId);
+    this.assertRedeemPoints(payload.points);
 
-    const history = completedOrders.map((order) => {
-      const points = Math.max(1, Math.floor(order.total / 1_000));
+    const loyalty = await this.loyalty(userId);
+    if (loyalty.pointsBalance < payload.points) {
+      throw new BadRequestException('Not enough loyalty points');
+    }
+
+    return this.prisma.$transaction(async (tx) => {
+      const coupon = await tx.coupon.create({
+        data: {
+          code: await this.generateLoyaltyCouponCode(tx),
+          type: 'fixed',
+          value: payload.points * this.loyaltyRedeemRate,
+          minOrderAmount: 0,
+          usageLimit: 1,
+          usedCount: 0,
+          startsAt: new Date(),
+          expiresAt: new Date(Date.now() + this.loyaltyCouponTtlDays * 24 * 60 * 60 * 1000),
+          isActive: true,
+        },
+      });
+
+      const redemption = await tx.loyaltyRedemption.create({
+        data: {
+          userId,
+          couponId: coupon.id,
+          pointsSpent: payload.points,
+          discountAmount: coupon.value,
+        },
+        include: {
+          coupon: true,
+        },
+      });
+
+      await tx.notification.create({
+        data: {
+          userId,
+          type: 'promotion',
+          title: 'Loyalty voucher created',
+          content: `Coupon ${coupon.code} has been created from your loyalty points.`,
+          data: {
+            couponId: coupon.id,
+            couponCode: coupon.code,
+            pointsSpent: payload.points,
+            discountAmount: coupon.value,
+          },
+        },
+      });
+
+      const summary = await this.buildLoyaltySummary(tx, userId);
       return {
-        orderId: order.id,
-        orderNumber: order.orderNumber,
-        points,
-        type: 'earn' as const,
-        description: `Earned from order ${order.orderNumber}`,
-        createdAt: order.completedAt ?? order.createdAt,
+        success: true,
+        redemption: {
+          id: redemption.id,
+          pointsSpent: redemption.pointsSpent,
+          discountAmount: redemption.discountAmount,
+          coupon: {
+            id: coupon.id,
+            code: coupon.code,
+            value: coupon.value,
+            expiresAt: coupon.expiresAt,
+          },
+        },
+        loyalty: summary,
       };
     });
-    const totalEarned = history.reduce((sum, item) => sum + item.points, 0);
+  }
+
+  async referral(userId: string) {
+    const user = await this.ensureUser(userId);
+    const referralCode = user.referralCode ?? (await this.assignReferralCode(userId, user.fullName || user.email));
+    const data = await this.prisma.referralEvent.findMany({
+      where: { referrerId: userId },
+      orderBy: [{ createdAt: 'desc' }],
+      include: {
+        referredUser: {
+          select: {
+            id: true,
+            email: true,
+            fullName: true,
+            createdAt: true,
+          },
+        },
+      },
+    });
 
     return {
-      pointsBalance: totalEarned,
-      totalEarned,
-      totalRedeemed: 0,
-      tier: this.resolveLoyaltyTier(totalEarned),
-      history,
+      referralCode,
+      referralLink: `${this.referralBaseUrl()}/register?ref=${referralCode}`,
+      totalSignups: data.length,
+      qualifiedCount: data.filter((item) => item.status === 'qualified' || item.status === 'rewarded').length,
+      rewardedCount: data.filter((item) => item.status === 'rewarded').length,
+      totalRewardPoints: data.reduce(
+        (sum, item) => sum + (item.status === 'rewarded' ? item.rewardPoints : 0),
+        0,
+      ),
+      data: data.map((item) => ({
+        id: item.id,
+        referralCode: item.referralCode,
+        status: item.status,
+        rewardPoints: item.rewardPoints,
+        qualifiedOrderId: item.qualifiedOrderId,
+        qualifiedAt: item.qualifiedAt,
+        rewardGrantedAt: item.rewardGrantedAt,
+        createdAt: item.createdAt,
+        referredUser: item.referredUser,
+      })),
     };
+  }
+
+  async regenerateReferralCode(userId: string) {
+    const user = await this.ensureUser(userId);
+    const referralCode = await this.generateUniqueReferralCode(user.fullName || user.email);
+    await this.prisma.user.update({
+      where: { id: userId },
+      data: { referralCode },
+    });
+
+    return this.referral(userId);
   }
 
   async profile(userId: string) {
@@ -437,7 +531,18 @@ export class AccountService {
 
   async exportData(userId: string) {
     const profile = await this.ensureUser(userId);
-    const [addresses, orders, wishlist, reviews, notifications, preference, apiKeys] = await Promise.all([
+    const [
+      addresses,
+      orders,
+      wishlist,
+      reviews,
+      notifications,
+      preference,
+      apiKeys,
+      savedPaymentMethods,
+      referralEvents,
+      loyaltyRedemptions,
+    ] = await Promise.all([
       this.prisma.address.findMany({
         where: { userId },
         orderBy: [{ isDefault: 'desc' }, { createdAt: 'desc' }],
@@ -493,6 +598,64 @@ export class AccountService {
           createdAt: true,
         },
       }),
+      this.prisma.savedPaymentMethod.findMany({
+        where: { userId },
+        orderBy: [{ isDefault: 'desc' }, { createdAt: 'desc' }],
+        select: {
+          id: true,
+          gateway: true,
+          method: true,
+          label: true,
+          brand: true,
+          last4: true,
+          expiryMonth: true,
+          expiryYear: true,
+          providerCustomerRef: true,
+          isDefault: true,
+          createdAt: true,
+          updatedAt: true,
+        },
+      }),
+      this.prisma.referralEvent.findMany({
+        where: {
+          OR: [{ referrerId: userId }, { referredUserId: userId }],
+        },
+        orderBy: [{ createdAt: 'desc' }],
+        include: {
+          referrer: {
+            select: {
+              id: true,
+              email: true,
+              fullName: true,
+            },
+          },
+          referredUser: {
+            select: {
+              id: true,
+              email: true,
+              fullName: true,
+            },
+          },
+        },
+      }),
+      this.prisma.loyaltyRedemption.findMany({
+        where: { userId },
+        orderBy: [{ createdAt: 'desc' }],
+        include: {
+          coupon: {
+            select: {
+              id: true,
+              code: true,
+              type: true,
+              value: true,
+              startsAt: true,
+              expiresAt: true,
+              isActive: true,
+              usedCount: true,
+            },
+          },
+        },
+      }),
     ]);
 
     return {
@@ -505,6 +668,9 @@ export class AccountService {
       notifications,
       notificationPreference: preference,
       apiKeys,
+      savedPaymentMethods,
+      referralEvents,
+      loyaltyRedemptions,
     };
   }
 
@@ -530,6 +696,23 @@ export class AccountService {
       await tx.wishlistItem.deleteMany({ where: { userId } });
       await tx.notification.deleteMany({ where: { userId } });
       await tx.notificationPreference.deleteMany({ where: { userId } });
+      await tx.savedPaymentMethod.deleteMany({ where: { userId } });
+      await tx.referralEvent.deleteMany({
+        where: {
+          OR: [{ referrerId: userId }, { referredUserId: userId }],
+        },
+      });
+      const redemptions = await tx.loyaltyRedemption.findMany({
+        where: { userId },
+        select: { couponId: true },
+      });
+      await tx.loyaltyRedemption.deleteMany({ where: { userId } });
+      if (redemptions.length) {
+        await tx.coupon.updateMany({
+          where: { id: { in: redemptions.map((item) => item.couponId) } },
+          data: { isActive: false },
+        });
+      }
       await tx.refreshSession.deleteMany({ where: { userId } });
       await tx.passwordResetToken.deleteMany({ where: { userId } });
       await tx.emailVerificationToken.deleteMany({ where: { userId } });
@@ -619,12 +802,187 @@ export class AccountService {
       fullName: true,
       phone: true,
       role: true,
+      referralCode: true,
       emailVerifiedAt: true,
       twoFactorEnabledAt: true,
       lastLoginAt: true,
       createdAt: true,
       updatedAt: true,
     } satisfies Prisma.UserSelect;
+  }
+
+  private async assignReferralCode(userId: string, seed: string) {
+    const referralCode = await this.generateUniqueReferralCode(seed);
+    await this.prisma.user.update({
+      where: { id: userId },
+      data: { referralCode },
+    });
+    return referralCode;
+  }
+
+  private async generateUniqueReferralCode(seed: string) {
+    const base =
+      seed
+        .trim()
+        .toUpperCase()
+        .replace(/[^A-Z0-9]+/g, '')
+        .slice(0, 6) || 'BANHAN';
+
+    for (let attempt = 0; attempt < 10; attempt += 1) {
+      const candidate = `${base}${Math.random().toString(36).slice(2, 6).toUpperCase()}`;
+      const existing = await this.prisma.user.findUnique({
+        where: { referralCode: candidate },
+        select: { id: true },
+      });
+
+      if (!existing) {
+        return candidate;
+      }
+    }
+
+    return `${base}${Date.now().toString(36).slice(-6).toUpperCase()}`;
+  }
+
+  private referralBaseUrl() {
+    const baseUrl = process.env.APP_PUBLIC_URL?.trim();
+    return baseUrl && /^https?:\/\//.test(baseUrl) ? baseUrl.replace(/\/+$/, '') : 'https://banhang.local';
+  }
+
+  private async buildLoyaltySummary(
+    client: PrismaService | Prisma.TransactionClient,
+    userId: string,
+  ) {
+    const [completedOrders, rewardedReferrals, redemptions] = await Promise.all([
+      client.order.findMany({
+        where: {
+          userId,
+          status: 'completed',
+        },
+        orderBy: [{ completedAt: 'desc' }, { createdAt: 'desc' }],
+        select: {
+          id: true,
+          orderNumber: true,
+          total: true,
+          completedAt: true,
+          createdAt: true,
+        },
+      }),
+      client.referralEvent.findMany({
+        where: {
+          referrerId: userId,
+          status: 'rewarded',
+        },
+        orderBy: [{ rewardGrantedAt: 'desc' }, { createdAt: 'desc' }],
+        include: {
+          referredUser: {
+            select: {
+              id: true,
+              fullName: true,
+              email: true,
+            },
+          },
+        },
+      }),
+      client.loyaltyRedemption.findMany({
+        where: { userId },
+        orderBy: [{ createdAt: 'desc' }],
+        include: {
+          coupon: {
+            select: {
+              id: true,
+              code: true,
+              expiresAt: true,
+              isActive: true,
+              usedCount: true,
+            },
+          },
+        },
+      }),
+    ]);
+
+    const orderHistory = completedOrders.map((order) => {
+      const points = Math.max(1, Math.floor(order.total / 1_000));
+      return {
+        orderId: order.id,
+        orderNumber: order.orderNumber,
+        points,
+        type: 'earn' as const,
+        source: 'order' as const,
+        description: `Earned from order ${order.orderNumber}`,
+        createdAt: order.completedAt ?? order.createdAt,
+      };
+    });
+    const referralHistory = rewardedReferrals.map((event) => ({
+      referralEventId: event.id,
+      referredUserId: event.referredUserId,
+      referredUserName: event.referredUser.fullName,
+      referredUserEmail: event.referredUser.email,
+      orderId: event.qualifiedOrderId ?? null,
+      points: event.rewardPoints,
+      type: 'earn' as const,
+      source: 'referral' as const,
+      description: `Referral reward from ${event.referredUser.fullName}`,
+      createdAt: event.rewardGrantedAt ?? event.createdAt,
+    }));
+    const redemptionHistory = redemptions.map((redemption) => ({
+      redemptionId: redemption.id,
+      couponId: redemption.couponId,
+      couponCode: redemption.coupon.code,
+      points: redemption.pointsSpent,
+      discountAmount: redemption.discountAmount,
+      type: 'redeem' as const,
+      source: 'voucher' as const,
+      description: `Redeemed ${redemption.pointsSpent} points for coupon ${redemption.coupon.code}`,
+      createdAt: redemption.createdAt,
+      couponExpiresAt: redemption.coupon.expiresAt,
+      couponActive: redemption.coupon.isActive,
+      couponUsed: redemption.coupon.usedCount > 0,
+    }));
+    const history = [...orderHistory, ...referralHistory, ...redemptionHistory].sort(
+      (left, right) => right.createdAt.getTime() - left.createdAt.getTime(),
+    );
+    const totalEarned = [...orderHistory, ...referralHistory].reduce((sum, item) => sum + item.points, 0);
+    const totalRedeemed = redemptionHistory.reduce((sum, item) => sum + item.points, 0);
+    const pointsBalance = Math.max(0, totalEarned - totalRedeemed);
+
+    return {
+      pointsBalance,
+      totalEarned,
+      totalRedeemed,
+      tier: this.resolveLoyaltyTier(totalEarned),
+      history,
+      redeemRules: {
+        minPoints: this.loyaltyMinRedeemPoints,
+        stepPoints: this.loyaltyRedeemStep,
+        rate: this.loyaltyRedeemRate,
+      },
+    };
+  }
+
+  private assertRedeemPoints(points: number) {
+    if (points < this.loyaltyMinRedeemPoints) {
+      throw new BadRequestException(`Minimum redeem points is ${this.loyaltyMinRedeemPoints}`);
+    }
+
+    if (points % this.loyaltyRedeemStep !== 0) {
+      throw new BadRequestException(`Redeem points must be in increments of ${this.loyaltyRedeemStep}`);
+    }
+  }
+
+  private async generateLoyaltyCouponCode(client: PrismaService | Prisma.TransactionClient) {
+    for (let attempt = 0; attempt < 10; attempt += 1) {
+      const code = `LOYAL-${generateToken(4).toUpperCase()}`;
+      const existing = await client.coupon.findUnique({
+        where: { code },
+        select: { id: true },
+      });
+
+      if (!existing) {
+        return code;
+      }
+    }
+
+    return `LOYAL-${Date.now().toString(36).toUpperCase()}`;
   }
 
   private resolveLoyaltyTier(points: number) {

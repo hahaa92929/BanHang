@@ -20,6 +20,7 @@ import { generateId } from '../../common/security';
 import { AppEnv } from '../../config/env';
 import { PrismaService } from '../../infra/prisma/prisma.service';
 import { CheckoutDto } from './dto/checkout.dto';
+import { CreateOrderNoteDto } from './dto/create-order-note.dto';
 
 type ActorRole = 'super_admin' | 'admin' | 'manager' | 'staff' | 'customer' | 'guest';
 
@@ -43,6 +44,10 @@ export class OrdersService {
         process.env.RESERVATION_TTL_MINUTES ??
         15,
     );
+  }
+
+  private get db(): any {
+    return this.prisma as any;
   }
 
   async getCurrentReservation(userId: string) {
@@ -269,20 +274,7 @@ export class OrdersService {
   }
 
   async getById(id: string, userId: string, role: ActorRole) {
-    const order = await this.prisma.order.findUnique({
-      where: { id },
-      include: this.orderInclude(),
-    });
-
-    if (!order) {
-      throw new NotFoundException('Order not found');
-    }
-
-    if (!this.canManageAllOrders(role) && order.userId !== userId) {
-      throw new ForbiddenException('Cannot access this order');
-    }
-
-    return order;
+    return this.getAuthorizedOrder(id, userId, role, this.orderInclude());
   }
 
   async checkout(userId: string, payload: CheckoutDto) {
@@ -500,6 +492,18 @@ export class OrdersService {
         });
       }
 
+      if (nextStatus === 'completed') {
+        await this.applyReferralRewardInTx(
+          tx,
+          {
+            id: order.id,
+            userId: order.userId,
+            orderNumber: order.orderNumber,
+          },
+          now,
+        );
+      }
+
       await tx.orderStatusEvent.create({
         data: {
           orderId: id,
@@ -714,13 +718,13 @@ export class OrdersService {
   }
 
   async getTracking(id: string, userId: string, role: ActorRole) {
-    const order = await this.getById(id, userId, role);
+    const order = (await this.getById(id, userId, role)) as any;
     return {
       orderId: order.id,
       orderNumber: order.orderNumber,
       trackingCode: order.trackingCode,
       shippingStatus: order.shippingStatus,
-      timeline: order.history.map((item) => ({
+      timeline: order.history.map((item: any) => ({
         fromStatus: item.fromStatus,
         toStatus: item.toStatus,
         note: item.note,
@@ -730,7 +734,7 @@ export class OrdersService {
   }
 
   async getInvoice(id: string, userId: string, role: ActorRole) {
-    const order = await this.getById(id, userId, role);
+    const order = (await this.getById(id, userId, role)) as any;
     return {
       invoiceNumber: `INV-${order.orderNumber}`,
       orderNumber: order.orderNumber,
@@ -741,7 +745,7 @@ export class OrdersService {
       shippingFee: order.shippingFee,
       taxAmount: order.taxAmount,
       total: order.total,
-      items: order.items.map((item) => ({
+      items: order.items.map((item: any) => ({
         sku: item.sku,
         name: item.name,
         variantId: item.variantId ?? null,
@@ -752,6 +756,78 @@ export class OrdersService {
       })),
       shippingAddress: order.addressJson,
     };
+  }
+
+  async listNotes(id: string, userId: string, role: ActorRole) {
+    const order = await this.getAuthorizedOrder(id, userId, role);
+    const canManage = this.canManageAllOrders(role);
+    const where = {
+      orderId: order.id,
+      ...(canManage ? {} : { visibility: 'customer' }),
+    };
+
+    return {
+      total: await this.db.orderNote.count({ where }),
+      data: await this.db.orderNote.findMany({
+        where,
+        orderBy: [{ createdAt: 'asc' }],
+        include: {
+          author: {
+            select: {
+              id: true,
+              email: true,
+              fullName: true,
+              role: true,
+            },
+          },
+        },
+      }),
+    };
+  }
+
+  async addNote(id: string, userId: string, role: ActorRole, payload: CreateOrderNoteDto) {
+    const order = await this.getAuthorizedOrder(id, userId, role);
+    const visibility = payload.visibility ?? 'customer';
+
+    if (visibility === 'internal' && !this.canManageAllOrders(role)) {
+      throw new ForbiddenException('Cannot create internal note');
+    }
+
+    const note = await this.db.orderNote.create({
+      data: {
+        orderId: order.id,
+        authorId: userId,
+        visibility,
+        content: payload.content.trim(),
+      },
+      include: {
+        author: {
+          select: {
+            id: true,
+            email: true,
+            fullName: true,
+            role: true,
+          },
+        },
+      },
+    });
+
+    if (visibility === 'customer' && this.canManageAllOrders(role)) {
+      await this.prisma.notification.create({
+        data: {
+          userId: order.userId,
+          type: 'order',
+          title: 'Order note updated',
+          content: `A new note was added to order ${order.orderNumber}.`,
+          data: {
+            orderId: order.id,
+            noteId: note.id,
+          },
+        },
+      });
+    }
+
+    return note;
   }
 
   private async releaseExpiredInTx(tx: Prisma.TransactionClient, actorUserId = 'system') {
@@ -1059,8 +1135,76 @@ export class OrdersService {
     return paymentMethod;
   }
 
+  private async applyReferralRewardInTx(
+    tx: Prisma.TransactionClient,
+    order: {
+      id: string;
+      userId: string;
+      orderNumber: string;
+    },
+    now: Date,
+  ) {
+    const referral = await tx.referralEvent.findFirst({
+      where: {
+        referredUserId: order.userId,
+        status: 'signed_up',
+      },
+      orderBy: { createdAt: 'asc' },
+    });
+
+    if (!referral) {
+      return;
+    }
+
+    await tx.referralEvent.update({
+      where: { id: referral.id },
+      data: {
+        status: 'rewarded',
+        qualifiedOrderId: order.id,
+        qualifiedAt: now,
+        rewardGrantedAt: now,
+      },
+    });
+
+    await tx.notification.create({
+      data: {
+        userId: referral.referrerId,
+        type: 'promotion',
+        title: 'Referral reward earned',
+        content: `Your referral completed order ${order.orderNumber}.`,
+        data: {
+          orderId: order.id,
+          referredUserId: order.userId,
+          rewardPoints: referral.rewardPoints,
+        },
+      },
+    });
+  }
+
   private canManageAllOrders(role: ActorRole) {
     return ['super_admin', 'admin', 'manager', 'staff'].includes(role);
+  }
+
+  private async getAuthorizedOrder(
+    id: string,
+    userId: string,
+    role: ActorRole,
+    include?: Prisma.OrderInclude,
+  ) {
+    const order = await this.prisma.order.findUnique({
+      where: { id },
+      ...(include ? { include } : {}),
+    });
+
+    if (!order) {
+      throw new NotFoundException('Order not found');
+    }
+
+    if (!this.canManageAllOrders(role) && order.userId !== userId) {
+      throw new ForbiddenException('Cannot access this order');
+    }
+
+    return order;
   }
 
   private reservationInclude() {

@@ -1,24 +1,42 @@
 import { PrismaClient, ProductStatus, UserRole } from '@prisma/client';
-import { hashPassword } from '../src/common/security';
+import { generateToken, hashPassword } from '../src/common/security';
 import { slugify } from '../src/common/slug';
 
 const prisma = new PrismaClient();
 
 async function main() {
+  const db = prisma as PrismaClient & Record<string, any>;
   await prisma.paymentWebhookEvent.deleteMany();
   await prisma.payment.deleteMany();
+  await prisma.storeAppointment.deleteMany();
+  await prisma.storeLocation.deleteMany();
+  await (prisma as PrismaClient & Record<string, any>).newsletterSubscriber.deleteMany();
+  await db.promotionCampaign.deleteMany();
+  await db.blogPost.deleteMany();
+  await db.contentPage.deleteMany();
   await prisma.orderStatusEvent.deleteMany();
+  await (prisma as PrismaClient & Record<string, any>).orderNote.deleteMany();
   await prisma.orderItem.deleteMany();
   await prisma.order.deleteMany();
+  await prisma.priceAlert.deleteMany();
+  await prisma.productPriceHistory.deleteMany();
   await prisma.inventoryLevel.deleteMany();
   await prisma.inventoryMovement.deleteMany();
   await prisma.inventoryReservationItem.deleteMany();
   await prisma.inventoryReservation.deleteMany();
   await prisma.cartCoupon.deleteMany();
+  await prisma.productQuestionUpvote.deleteMany();
+  await prisma.productQuestion.deleteMany();
   await prisma.review.deleteMany();
+  await prisma.compareItem.deleteMany();
+  await prisma.wishlistShare.deleteMany();
   await prisma.wishlistItem.deleteMany();
   await prisma.cartItem.deleteMany();
+  await (prisma as PrismaClient & Record<string, any>).cartReminderEvent.deleteMany();
+  await (prisma as PrismaClient & Record<string, any>).pushSubscription.deleteMany();
   await prisma.notification.deleteMany();
+  await (prisma as PrismaClient & Record<string, any>).customerNote.deleteMany();
+  await (prisma as PrismaClient & Record<string, any>).customerTag.deleteMany();
   await prisma.passwordResetToken.deleteMany();
   await prisma.emailVerificationToken.deleteMany();
   await prisma.refreshSession.deleteMany();
@@ -158,6 +176,161 @@ async function main() {
       },
     }),
   ]);
+
+  const commonOpeningHours = {
+    mon: [{ open: '08:00', close: '21:00' }],
+    tue: [{ open: '08:00', close: '21:00' }],
+    wed: [{ open: '08:00', close: '21:00' }],
+    thu: [{ open: '08:00', close: '21:00' }],
+    fri: [{ open: '08:00', close: '21:00' }],
+    sat: [{ open: '08:00', close: '22:00' }],
+    sun: [{ open: '09:00', close: '21:00' }],
+  };
+
+  await prisma.storeLocation.createMany({
+    data: [
+      {
+        slug: 'banhang-flagship-district-1',
+        name: 'BanHang Flagship District 1',
+        description: 'Flagship experience store with pickup, setup support, and live demo zones.',
+        phone: '02873000001',
+        email: 'd1@banhang.local',
+        province: 'Ho Chi Minh',
+        district: 'Quan 1',
+        ward: 'Ben Nghe',
+        addressLine: '25 Nguyen Hue',
+        latitude: 10.7744,
+        longitude: 106.7033,
+        openingHours: commonOpeningHours,
+        services: ['pickup', 'warranty', 'personal_setup', 'trade_in'],
+        mapsUrl: 'https://maps.google.com/?q=10.7744,106.7033',
+      },
+      {
+        slug: 'banhang-thu-duc',
+        name: 'BanHang Thu Duc Hub',
+        description: 'Eastern city pickup point focused on fast order collection and warranty drop-off.',
+        phone: '02873000002',
+        email: 'thuduc@banhang.local',
+        province: 'Ho Chi Minh',
+        district: 'Thu Duc',
+        ward: 'Linh Tay',
+        addressLine: '200 Kha Van Can',
+        latitude: 10.8506,
+        longitude: 106.7568,
+        openingHours: commonOpeningHours,
+        services: ['pickup', 'warranty'],
+        mapsUrl: 'https://maps.google.com/?q=10.8506,106.7568',
+      },
+      {
+        slug: 'banhang-hoan-kiem',
+        name: 'BanHang Hoan Kiem Store',
+        description: 'Northern flagship showroom with in-store consultation and accessory zone.',
+        phone: '02473000003',
+        email: 'hanoi@banhang.local',
+        province: 'Ha Noi',
+        district: 'Hoan Kiem',
+        ward: 'Trang Tien',
+        addressLine: '18 Trang Tien',
+        latitude: 21.0245,
+        longitude: 105.8561,
+        openingHours: commonOpeningHours,
+        services: ['pickup', 'personal_setup', 'accessory_consulting'],
+        mapsUrl: 'https://maps.google.com/?q=21.0245,105.8561',
+      },
+    ],
+  });
+
+  await db.contentPage.createMany({
+    data: [
+      {
+        slug: 'about',
+        title: 'About BanHang',
+        excerpt: 'Learn about our mission, service standards, and retail footprint.',
+        content:
+          'BanHang is a modern electronics retailer focused on curated devices, fast delivery, and expert after-sales support.',
+        metaTitle: 'About BanHang',
+        metaDescription: 'Company profile, retail philosophy, and customer support commitments.',
+        isPublished: true,
+        publishedAt: new Date(Date.now() - 14 * 24 * 60 * 60 * 1000),
+      },
+      {
+        slug: 'warranty-policy',
+        title: 'Warranty Policy',
+        excerpt: 'Transparent warranty terms for devices, accessories, and in-store support.',
+        content:
+          'Products sold by BanHang are covered by brand-backed warranty terms and in-store diagnostic support.',
+        metaTitle: 'BanHang Warranty Policy',
+        metaDescription: 'Warranty coverage, exclusions, and service-center support policy.',
+        isPublished: true,
+        publishedAt: new Date(Date.now() - 10 * 24 * 60 * 60 * 1000),
+      },
+    ],
+  });
+
+  await db.promotionCampaign.createMany({
+    data: [
+      {
+        key: 'home-hero-april-tech-week',
+        name: 'April Tech Week Hero',
+        kind: 'banner',
+        placement: 'home_hero',
+        title: 'April Tech Week',
+        subtitle: 'Flagship deals, accessory bundles, and fast pickup nationwide.',
+        content: 'Discover curated promotions across phones, laptops, and audio.',
+        imageUrl: 'https://cdn.example.com/banners/april-tech-week.jpg',
+        linkUrl: '/promotions/april-tech-week',
+        startsAt: new Date(Date.now() - 2 * 24 * 60 * 60 * 1000),
+        expiresAt: new Date(Date.now() + 5 * 24 * 60 * 60 * 1000),
+        priority: 100,
+        isActive: true,
+        metadata: {
+          badge: 'Hot',
+          theme: 'tech-week',
+        },
+      },
+      {
+        key: 'home-flash-sale-iphone',
+        name: 'iPhone Flash Sale',
+        kind: 'flash_sale',
+        placement: 'home_flash_sale',
+        title: '48h iPhone Flash Sale',
+        subtitle: 'Save more on selected iPhone and AirPods bundles.',
+        content: 'Limited stock at flagship stores and online checkout.',
+        imageUrl: 'https://cdn.example.com/banners/iphone-flash-sale.jpg',
+        linkUrl: '/products/iphone-15-128gb-iph15-128-blk',
+        couponCode: 'WELCOME10',
+        discountPercent: 10,
+        startsAt: new Date(Date.now() - 6 * 60 * 60 * 1000),
+        expiresAt: new Date(Date.now() + 42 * 60 * 60 * 1000),
+        priority: 90,
+        isActive: true,
+        metadata: {
+          remainingStock: 23,
+          highlight: 'flash-sale',
+        },
+      },
+    ],
+  });
+
+  await (prisma as PrismaClient & Record<string, any>).newsletterSubscriber.create({
+    data: {
+      email: 'newsletter@banhang.local',
+      fullName: 'Newsletter Demo',
+      source: 'seed',
+      status: 'active',
+      confirmedAt: new Date(),
+    },
+  });
+
+  await (prisma as PrismaClient & Record<string, any>).pushSubscription.create({
+    data: {
+      userId: customer.id,
+      endpoint: 'https://push.example.com/subscriptions/customer-demo',
+      p256dh: 'demo-p256dh-key',
+      auth: 'demo-auth-secret',
+      userAgent: 'Seeded web push subscription',
+    },
+  });
 
   const products = [
     {
@@ -346,6 +519,15 @@ async function main() {
       },
     });
 
+    await prisma.productPriceHistory.create({
+      data: {
+        productId: product.id,
+        price: product.price,
+        previousPrice: null,
+        source: 'seed',
+      },
+    });
+
     for (const variant of item.variants) {
       const stock = variant.stocks.reduce((sum, entry) => sum + entry.quantity, 0);
       const createdVariant = await prisma.productVariant.create({
@@ -381,6 +563,39 @@ async function main() {
     orderBy: { createdAt: 'asc' },
   });
 
+  if (iphone && macbook) {
+    await db.blogPost.createMany({
+      data: [
+        {
+          slug: 'iphone-15-vs-galaxy-s24-which-flagship-fits-you',
+          title: 'iPhone 15 vs Galaxy S24: Which flagship fits you better?',
+          excerpt: 'We compare camera, performance, ecosystem, and day-to-day fit for two leading phones.',
+          content:
+            'This guide compares Apple and Samsung flagships through battery life, display, performance, and after-sales support.',
+          coverImageUrl: 'https://cdn.example.com/blog/iphone-vs-galaxy.jpg',
+          tags: ['comparison', 'smartphone', 'apple', 'samsung'],
+          readTimeMinutes: 6,
+          relatedProductIds: [iphone.id],
+          isPublished: true,
+          publishedAt: new Date(Date.now() - 4 * 24 * 60 * 60 * 1000),
+        },
+        {
+          slug: 'macbook-air-m3-office-setup-guide',
+          title: 'MacBook Air M3 office setup guide for mobile teams',
+          excerpt: 'A practical checklist for accessories, security, and productivity when deploying MacBooks.',
+          content:
+            'We cover monitor pairing, keyboard and mouse bundles, remote work security, and setup flow for distributed teams.',
+          coverImageUrl: 'https://cdn.example.com/blog/macbook-air-m3-guide.jpg',
+          tags: ['macbook', 'productivity', 'office'],
+          readTimeMinutes: 5,
+          relatedProductIds: [macbook.id],
+          isPublished: true,
+          publishedAt: new Date(Date.now() - 2 * 24 * 60 * 60 * 1000),
+        },
+      ],
+    });
+  }
+
   await prisma.address.create({
     data: {
       userId: customer.id,
@@ -392,6 +607,34 @@ async function main() {
       ward: 'Ben Nghe',
       addressLine: '123 Nguyen Trai',
       isDefault: true,
+    },
+  });
+
+  await (prisma as PrismaClient & Record<string, any>).customerTag.createMany({
+    data: [
+      {
+        userId: customer.id,
+        key: 'vip-watch',
+        name: 'VIP Watch',
+        color: '#D97706',
+      },
+      {
+        userId: customer.id,
+        key: 'newsletter-engaged',
+        name: 'Newsletter Engaged',
+        color: '#2563EB',
+      },
+    ],
+  });
+
+  await (prisma as PrismaClient & Record<string, any>).customerNote.create({
+    data: {
+      userId: customer.id,
+      authorId: admin.id,
+      title: 'High-intent buyer',
+      content:
+        'Customer often checks flagship products and responds well to newsletter promotions. Consider bundle upsell on next completed order.',
+      isPinned: true,
     },
   });
 
@@ -420,6 +663,28 @@ async function main() {
   });
 
   if (iphone && macbook) {
+    await prisma.priceAlert.create({
+      data: {
+        userId: customer.id,
+        productId: iphone.id,
+        targetPrice: 19_500_000,
+        isActive: true,
+      },
+    });
+
+    await prisma.compareItem.createMany({
+      data: [
+        {
+          userId: customer.id,
+          productId: iphone.id,
+        },
+        {
+          userId: customer.id,
+          productId: macbook.id,
+        },
+      ],
+    });
+
     await prisma.wishlistItem.createMany({
       data: [
         {
@@ -431,6 +696,14 @@ async function main() {
           productId: macbook.id,
         },
       ],
+    });
+
+    await prisma.wishlistShare.create({
+      data: {
+        userId: customer.id,
+        token: generateToken(24),
+        title: 'Customer Demo picks',
+      },
     });
 
     await prisma.review.createMany({
@@ -458,6 +731,25 @@ async function main() {
           adminReplyAt: new Date(),
         },
       ],
+    });
+
+    const question = await prisma.productQuestion.create({
+      data: {
+        userId: customer.id,
+        productId: iphone.id,
+        question: 'May nay co ho tro eSIM dong thoi voi SIM vat ly khong?',
+        answer: 'Co. Ban co the dung 1 nano SIM va eSIM tren phien ban nay.',
+        answeredAt: new Date(),
+        answeredById: admin.id,
+        upvoteCount: 1,
+      },
+    });
+
+    await prisma.productQuestionUpvote.create({
+      data: {
+        userId: admin.id,
+        questionId: question.id,
+      },
     });
   }
 

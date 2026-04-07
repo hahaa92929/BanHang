@@ -3,6 +3,8 @@ import { test } from 'node:test';
 import { AccountController } from './account/account.controller';
 import { AuthController } from './auth/auth.controller';
 import { CartController } from './cart/cart.controller';
+import { CompareController } from './compare/compare.controller';
+import { ContentController } from './content/content.controller';
 import { InventoryController } from './inventory/inventory.controller';
 import { NotificationsController } from './notifications/notifications.controller';
 import { OrdersController } from './orders/orders.controller';
@@ -11,6 +13,7 @@ import { ProductsController } from './products/products.controller';
 import { ReportingController } from './reporting/reporting.controller';
 import { SearchController } from './search/search.controller';
 import { ShippingController } from './shipping/shipping.controller';
+import { StoresController } from './stores/stores.controller';
 import { WishlistController } from './wishlist/wishlist.controller';
 
 test('AuthController forwards request metadata and session actions', async () => {
@@ -159,6 +162,7 @@ test('AuthController forwards request metadata and session actions', async () =>
         fullName: 'User',
         phone: '0900',
         guestAccessToken: 'guest-token',
+        referralCode: 'REF999',
       } as any,
       request,
       response,
@@ -177,6 +181,7 @@ test('AuthController forwards request metadata and session actions', async () =>
         fullName: 'User',
         phone: '0900',
         guestAccessToken: 'guest-token',
+        referralCode: 'REF999',
       } as any,
       request,
       response,
@@ -250,6 +255,7 @@ test('AuthController forwards request metadata and session actions', async () =>
         '0900',
         { ipAddress: '127.0.0.1', userAgent: 'agent' },
         'guest-token',
+        'REF999',
       ],
     },
     {
@@ -261,6 +267,7 @@ test('AuthController forwards request metadata and session actions', async () =>
         '0900',
         { ipAddress: '127.0.0.1', userAgent: 'agent' },
         'guest-token',
+        'REF999',
       ],
     },
     {
@@ -354,6 +361,18 @@ test('AccountController forwards dashboard orders loyalty profile address and ex
       calls.push({ method: 'loyalty', args });
       return { pointsBalance: 1500 };
     },
+    redeemLoyalty: (...args: unknown[]) => {
+      calls.push({ method: 'redeemLoyalty', args });
+      return { success: true, redemption: { pointsSpent: 500 } };
+    },
+    referral: (...args: unknown[]) => {
+      calls.push({ method: 'referral', args });
+      return { referralCode: 'REF999' };
+    },
+    regenerateReferralCode: (...args: unknown[]) => {
+      calls.push({ method: 'regenerateReferralCode', args });
+      return { referralCode: 'REFNEW1' };
+    },
     profile: (...args: unknown[]) => {
       calls.push({ method: 'profile', args });
       return { id: 'u-1' };
@@ -402,12 +421,16 @@ test('AccountController forwards dashboard orders loyalty profile address and ex
   } as any;
   const updateAddressBody = { label: 'Office' } as any;
   const deleteBody = { password: 'secret123', reason: 'privacy_request' } as any;
+  const redeemBody = { points: 500 } as any;
   const ordersQuery = { status: 'completed', page: 1, limit: 5 } as any;
 
   assert.deepEqual(controller.dashboard(request), { totalOrders: 2 });
   assert.deepEqual(controller.orders(request, ordersQuery), { total: 1, data: [] });
   assert.deepEqual(controller.reorder(request, 'ord-1'), { success: true, addedItems: 1 });
   assert.deepEqual(controller.loyalty(request), { pointsBalance: 1500 });
+  assert.deepEqual(controller.redeemLoyalty(request, redeemBody), { success: true, redemption: { pointsSpent: 500 } });
+  assert.deepEqual(controller.referral(request), { referralCode: 'REF999' });
+  assert.deepEqual(controller.regenerateReferralCode(request), { referralCode: 'REFNEW1' });
   assert.deepEqual(controller.profile(request), { id: 'u-1' });
   assert.deepEqual(controller.updateProfile(request, profileBody), { fullName: 'Updated' });
   assert.deepEqual(controller.addresses(request), { total: 1, data: [] });
@@ -426,6 +449,9 @@ test('AccountController forwards dashboard orders loyalty profile address and ex
     { method: 'listOrders', args: ['u-1', ordersQuery] },
     { method: 'reorder', args: ['u-1', 'ord-1'] },
     { method: 'loyalty', args: ['u-1'] },
+    { method: 'redeemLoyalty', args: ['u-1', redeemBody] },
+    { method: 'referral', args: ['u-1'] },
+    { method: 'regenerateReferralCode', args: ['u-1'] },
     { method: 'profile', args: ['u-1'] },
     { method: 'updateProfile', args: ['u-1', profileBody] },
     { method: 'listAddresses', args: ['u-1'] },
@@ -511,6 +537,152 @@ test('CartController forwards cart mutations to service', () => {
     { method: 'removeCoupon', args: ['u-1'] },
     { method: 'saveForLater', args: ['u-1', 'p-1', 'pv-1'] },
     { method: 'clear', args: ['u-1'] },
+  ]);
+});
+
+test('CompareController forwards compare list operations', () => {
+  const calls: Array<{ method: string; args: unknown[] }> = [];
+  const service = {
+    list: (...args: unknown[]) => {
+      calls.push({ method: 'list', args });
+      return { total: 2, data: [] };
+    },
+    addItem: (...args: unknown[]) => {
+      calls.push({ method: 'addItem', args });
+      return { total: 3, data: [] };
+    },
+    removeItem: (...args: unknown[]) => {
+      calls.push({ method: 'removeItem', args });
+      return { total: 2, data: [] };
+    },
+    clear: (...args: unknown[]) => {
+      calls.push({ method: 'clear', args });
+      return { total: 0, data: [] };
+    },
+  };
+  const controller = new CompareController(service as any);
+  const request = { user: { sub: 'u-1' } } as any;
+
+  assert.deepEqual(controller.list(request), { total: 2, data: [] });
+  assert.deepEqual(controller.addItem(request, { productId: 'p-3' } as any), { total: 3, data: [] });
+  assert.deepEqual(controller.removeItem(request, 'p-3'), { total: 2, data: [] });
+  assert.deepEqual(controller.clear(request), { total: 0, data: [] });
+
+  assert.deepEqual(calls, [
+    { method: 'list', args: ['u-1'] },
+    { method: 'addItem', args: ['u-1', 'p-3'] },
+    { method: 'removeItem', args: ['u-1', 'p-3'] },
+    { method: 'clear', args: ['u-1'] },
+  ]);
+});
+
+test('ContentController forwards CMS page blog and promotion actions', () => {
+  const calls: Array<{ method: string; args: unknown[] }> = [];
+  const service = {
+    listPages: (...args: unknown[]) => {
+      calls.push({ method: 'listPages', args });
+      return { total: 1, data: [] };
+    },
+    page: (...args: unknown[]) => {
+      calls.push({ method: 'page', args });
+      return { slug: 'about' };
+    },
+    createPage: (...args: unknown[]) => {
+      calls.push({ method: 'createPage', args });
+      return { id: 'pg-1' };
+    },
+    updatePage: (...args: unknown[]) => {
+      calls.push({ method: 'updatePage', args });
+      return { id: 'pg-1' };
+    },
+    listBlog: (...args: unknown[]) => {
+      calls.push({ method: 'listBlog', args });
+      return { total: 1, data: [] };
+    },
+    blog: (...args: unknown[]) => {
+      calls.push({ method: 'blog', args });
+      return { slug: 'iphone-guide' };
+    },
+    createBlogPost: (...args: unknown[]) => {
+      calls.push({ method: 'createBlogPost', args });
+      return { id: 'bp-1' };
+    },
+    updateBlogPost: (...args: unknown[]) => {
+      calls.push({ method: 'updateBlogPost', args });
+      return { id: 'bp-1' };
+    },
+    listPromotions: (...args: unknown[]) => {
+      calls.push({ method: 'listPromotions', args });
+      return { total: 1, data: [] };
+    },
+    subscribeNewsletter: (...args: unknown[]) => {
+      calls.push({ method: 'subscribeNewsletter', args });
+      return { success: true };
+    },
+    confirmNewsletter: (...args: unknown[]) => {
+      calls.push({ method: 'confirmNewsletter', args });
+      return { success: true };
+    },
+    unsubscribeNewsletter: (...args: unknown[]) => {
+      calls.push({ method: 'unsubscribeNewsletter', args });
+      return { success: true };
+    },
+    createPromotion: (...args: unknown[]) => {
+      calls.push({ method: 'createPromotion', args });
+      return { id: 'pm-1' };
+    },
+    updatePromotion: (...args: unknown[]) => {
+      calls.push({ method: 'updatePromotion', args });
+      return { id: 'pm-1' };
+    },
+  };
+  const controller = new ContentController(service as any);
+  const pagesQuery = { q: 'about', page: 1, limit: 10 } as any;
+  const blogQuery = { tag: 'iphone', page: 1, limit: 10 } as any;
+  const promotionsQuery = { placement: 'home_hero', page: 1, limit: 10 } as any;
+  const pageBody = { title: 'About', content: 'Content body long enough.' } as any;
+  const blogBody = { title: 'Guide', content: 'Blog content long enough.' } as any;
+  const newsletterBody = { email: 'newsletter@example.com', fullName: 'Reader' } as any;
+  const confirmNewsletterBody = { token: 'newsletter-token-1234567890' } as any;
+  const unsubscribeNewsletterBody = { email: 'newsletter@example.com' } as any;
+  const promotionBody = {
+    name: 'Hero',
+    kind: 'banner',
+    placement: 'home_hero',
+    title: 'Hero Title',
+    startsAt: new Date('2099-01-01T00:00:00.000Z'),
+  } as any;
+
+  assert.deepEqual(controller.pages(pagesQuery), { total: 1, data: [] });
+  assert.deepEqual(controller.page('about'), { slug: 'about' });
+  assert.deepEqual(controller.createPage(pageBody), { id: 'pg-1' });
+  assert.deepEqual(controller.updatePage('pg-1', pageBody), { id: 'pg-1' });
+  assert.deepEqual(controller.blog(blogQuery), { total: 1, data: [] });
+  assert.deepEqual(controller.blogDetail('iphone-guide'), { slug: 'iphone-guide' });
+  assert.deepEqual(controller.createBlog(blogBody), { id: 'bp-1' });
+  assert.deepEqual(controller.updateBlog('bp-1', blogBody), { id: 'bp-1' });
+  assert.deepEqual(controller.promotions(promotionsQuery), { total: 1, data: [] });
+  assert.deepEqual(controller.subscribeNewsletter(newsletterBody), { success: true });
+  assert.deepEqual(controller.confirmNewsletter(confirmNewsletterBody), { success: true });
+  assert.deepEqual(controller.unsubscribeNewsletter(unsubscribeNewsletterBody), { success: true });
+  assert.deepEqual(controller.createPromotion(promotionBody), { id: 'pm-1' });
+  assert.deepEqual(controller.updatePromotion('pm-1', promotionBody), { id: 'pm-1' });
+
+  assert.deepEqual(calls, [
+    { method: 'listPages', args: [pagesQuery] },
+    { method: 'page', args: ['about'] },
+    { method: 'createPage', args: [pageBody] },
+    { method: 'updatePage', args: ['pg-1', pageBody] },
+    { method: 'listBlog', args: [blogQuery] },
+    { method: 'blog', args: ['iphone-guide'] },
+    { method: 'createBlogPost', args: [blogBody] },
+    { method: 'updateBlogPost', args: ['bp-1', blogBody] },
+    { method: 'listPromotions', args: [promotionsQuery] },
+    { method: 'subscribeNewsletter', args: [newsletterBody] },
+    { method: 'confirmNewsletter', args: [confirmNewsletterBody] },
+    { method: 'unsubscribeNewsletter', args: [unsubscribeNewsletterBody] },
+    { method: 'createPromotion', args: [promotionBody] },
+    { method: 'updatePromotion', args: ['pm-1', promotionBody] },
   ]);
 });
 
@@ -606,6 +778,18 @@ test('NotificationsController forwards inbox preferences and template actions', 
       calls.push({ method: 'unsubscribe', args });
       return { marketingOptIn: false };
     },
+    listPushSubscriptions: (...args: unknown[]) => {
+      calls.push({ method: 'listPushSubscriptions', args });
+      return { data: [] };
+    },
+    savePushSubscription: (...args: unknown[]) => {
+      calls.push({ method: 'savePushSubscription', args });
+      return { data: { id: 'ps-1' } };
+    },
+    removePushSubscription: (...args: unknown[]) => {
+      calls.push({ method: 'removePushSubscription', args });
+      return { success: true };
+    },
     listTemplates: (...args: unknown[]) => {
       calls.push({ method: 'listTemplates', args });
       return { data: [] };
@@ -630,6 +814,10 @@ test('NotificationsController forwards inbox preferences and template actions', 
       calls.push({ method: 'dispatchScheduled', args });
       return { processed: 1 };
     },
+    dispatchAbandonedCartReminders: (...args: unknown[]) => {
+      calls.push({ method: 'dispatchAbandonedCartReminders', args });
+      return { created: 1, skipped: 0 };
+    },
   };
   const controller = new NotificationsController(service as any);
   const request = { user: { sub: 'u-1' } } as any;
@@ -652,6 +840,7 @@ test('NotificationsController forwards inbox preferences and template actions', 
     content: 'Weekend sale',
   } as any;
   const dispatchBody = { limit: 10 } as any;
+  const abandonedCartBody = { limit: 10, idleMinutes: 1440, channel: 'email' } as any;
 
   assert.deepEqual(controller.list(request, listQuery), { data: [] });
   assert.deepEqual(controller.markRead(request, 'n-1'), { success: true });
@@ -660,12 +849,24 @@ test('NotificationsController forwards inbox preferences and template actions', 
   assert.deepEqual(controller.preferences(request), { orderInApp: true });
   assert.deepEqual(controller.updatePreferences(request, preferencesBody), { promotionEmail: true });
   assert.deepEqual(controller.unsubscribe(request, unsubscribeBody), { marketingOptIn: false });
+  assert.deepEqual(controller.pushSubscriptions(request), { data: [] });
+  assert.deepEqual(
+    controller.savePushSubscription(request, {
+      endpoint: 'https://push.example.com/subscriptions/new',
+      p256dh: 'new-p256dh-key',
+      auth: 'new-auth-key',
+      userAgent: 'Firefox',
+    } as any),
+    { data: { id: 'ps-1' } },
+  );
+  assert.deepEqual(controller.removePushSubscription(request, 'ps-1'), { success: true });
   assert.deepEqual(controller.templates('email'), { data: [] });
   assert.deepEqual(controller.createTemplate(templateBody), { id: 'tpl-1' });
   assert.deepEqual(controller.updateTemplate('tpl-1', updateTemplateBody), { id: 'tpl-1' });
   assert.deepEqual(controller.previewTemplate('tpl-1', previewBody), { title: 'Preview' });
   assert.deepEqual(controller.createBatch(batchBody), { created: 1 });
   assert.deepEqual(controller.dispatch(dispatchBody), { processed: 1 });
+  assert.deepEqual(controller.dispatchAbandonedCart(abandonedCartBody), { created: 1, skipped: 0 });
 
   assert.deepEqual(calls, [
     { method: 'list', args: ['u-1', listQuery] },
@@ -675,12 +876,27 @@ test('NotificationsController forwards inbox preferences and template actions', 
     { method: 'getPreferences', args: ['u-1'] },
     { method: 'updatePreferences', args: ['u-1', preferencesBody] },
     { method: 'unsubscribe', args: ['u-1', unsubscribeBody] },
+    { method: 'listPushSubscriptions', args: ['u-1'] },
+    {
+      method: 'savePushSubscription',
+      args: [
+        'u-1',
+        {
+          endpoint: 'https://push.example.com/subscriptions/new',
+          p256dh: 'new-p256dh-key',
+          auth: 'new-auth-key',
+          userAgent: 'Firefox',
+        },
+      ],
+    },
+    { method: 'removePushSubscription', args: ['u-1', 'ps-1'] },
     { method: 'listTemplates', args: ['email'] },
     { method: 'createTemplate', args: [templateBody] },
     { method: 'updateTemplate', args: ['tpl-1', updateTemplateBody] },
     { method: 'previewTemplate', args: ['tpl-1', { name: 'User' }] },
     { method: 'createBatch', args: [batchBody] },
     { method: 'dispatchScheduled', args: [dispatchBody] },
+    { method: 'dispatchAbandonedCartReminders', args: [abandonedCartBody] },
   ]);
 });
 
@@ -791,6 +1007,14 @@ test('OrdersController forwards reservation and order lifecycle actions', () => 
       calls.push({ method: 'updateStatus', args });
       return { status: 'completed' };
     },
+    listNotes: (...args: unknown[]) => {
+      calls.push({ method: 'listNotes', args });
+      return { total: 1, data: [] };
+    },
+    addNote: (...args: unknown[]) => {
+      calls.push({ method: 'addNote', args });
+      return { id: 'on-1' };
+    },
     getById: (...args: unknown[]) => {
       calls.push({ method: 'getById', args });
       return { id: 'ord-1' };
@@ -827,6 +1051,14 @@ test('OrdersController forwards reservation and order lifecycle actions', () => 
   assert.deepEqual(controller.updateStatus(request, 'ord-1', { status: 'completed' } as any), {
     status: 'completed',
   });
+  assert.deepEqual(controller.notes(request, 'ord-1'), { total: 1, data: [] });
+  assert.deepEqual(
+    controller.addNote(request, 'ord-1', {
+      visibility: 'customer',
+      content: 'Please deliver after 5 PM.',
+    } as any),
+    { id: 'on-1' },
+  );
   assert.deepEqual(controller.detail(request, 'ord-1'), { id: 'ord-1' });
 
   assert.deepEqual(calls, [
@@ -842,6 +1074,19 @@ test('OrdersController forwards reservation and order lifecycle actions', () => 
     { method: 'cancelOrder', args: ['ord-1', 'u-1', 'admin'] },
     { method: 'requestReturn', args: ['ord-1', 'u-1', 'admin'] },
     { method: 'updateStatus', args: ['ord-1', 'completed', 'u-1'] },
+    { method: 'listNotes', args: ['ord-1', 'u-1', 'admin'] },
+    {
+      method: 'addNote',
+      args: [
+        'ord-1',
+        'u-1',
+        'admin',
+        {
+          visibility: 'customer',
+          content: 'Please deliver after 5 PM.',
+        },
+      ],
+    },
     { method: 'getById', args: ['ord-1', 'u-1', 'admin'] },
   ]);
 });
@@ -851,6 +1096,22 @@ test('PaymentsController forwards payment admin actions and webhooks', () => {
   const service = {
     listMethods: (...args: unknown[]) => {
       calls.push({ method: 'listMethods', args });
+      return { data: [] };
+    },
+    listSavedMethods: (...args: unknown[]) => {
+      calls.push({ method: 'listSavedMethods', args });
+      return { data: [] };
+    },
+    createSavedMethod: (...args: unknown[]) => {
+      calls.push({ method: 'createSavedMethod', args });
+      return { data: [] };
+    },
+    setDefaultSavedMethod: (...args: unknown[]) => {
+      calls.push({ method: 'setDefaultSavedMethod', args });
+      return { data: [] };
+    },
+    removeSavedMethod: (...args: unknown[]) => {
+      calls.push({ method: 'removeSavedMethod', args });
       return { data: [] };
     },
     initiate: (...args: unknown[]) => {
@@ -871,11 +1132,23 @@ test('PaymentsController forwards payment admin actions and webhooks', () => {
     },
   };
   const controller = new PaymentsController(service as any);
-  const initiateBody = { orderId: 'ord-1', method: 'vnpay' } as any;
+  const request = { user: { sub: 'u-1' } } as any;
+  const initiateBody = { orderId: 'ord-1', method: 'vnpay', savedPaymentMethodId: 'spm-1' } as any;
   const refundBody = { amount: 50000, reason: 'customer_request' } as any;
   const webhookBody = { eventId: 'evt-1', type: 'payment.captured', payload: {} } as any;
+  const savedMethodBody = {
+    method: 'stripe',
+    gateway: 'stripe',
+    label: 'Visa ending 4242',
+    last4: '4242',
+    tokenRef: 'tok_demo',
+  } as any;
 
   assert.deepEqual(controller.methods(), { data: [] });
+  assert.deepEqual(controller.savedMethods(request), { data: [] });
+  assert.deepEqual(controller.createSavedMethod(request, savedMethodBody), { data: [] });
+  assert.deepEqual(controller.setDefaultSavedMethod(request, 'spm-1'), { data: [] });
+  assert.deepEqual(controller.removeSavedMethod(request, 'spm-1'), { data: [] });
   assert.deepEqual(controller.initiate(initiateBody), { paymentId: 'pay-1' });
   assert.deepEqual(controller.status('pay-1'), { id: 'pay-1' });
   assert.deepEqual(controller.refund('pay-1', refundBody), { status: 'refunded' });
@@ -883,6 +1156,10 @@ test('PaymentsController forwards payment admin actions and webhooks', () => {
 
   assert.deepEqual(calls, [
     { method: 'listMethods', args: [] },
+    { method: 'listSavedMethods', args: ['u-1'] },
+    { method: 'createSavedMethod', args: ['u-1', savedMethodBody] },
+    { method: 'setDefaultSavedMethod', args: ['u-1', 'spm-1'] },
+    { method: 'removeSavedMethod', args: ['u-1', 'spm-1'] },
     { method: 'initiate', args: [initiateBody] },
     { method: 'getStatus', args: ['pay-1'] },
     { method: 'refund', args: ['pay-1', refundBody] },
@@ -978,6 +1255,49 @@ test('SearchController forwards search suggestions trending and analytics', () =
   ]);
 });
 
+test('StoresController forwards locator listing nearest detail and appointment actions', () => {
+  const calls: Array<{ method: string; args: unknown[] }> = [];
+  const service = {
+    list: (...args: unknown[]) => {
+      calls.push({ method: 'list', args });
+      return { total: 1, data: [] };
+    },
+    nearest: (...args: unknown[]) => {
+      calls.push({ method: 'nearest', args });
+      return { total: 1, data: [] };
+    },
+    detail: (...args: unknown[]) => {
+      calls.push({ method: 'detail', args });
+      return { id: 's-1' };
+    },
+    createAppointment: (...args: unknown[]) => {
+      calls.push({ method: 'createAppointment', args });
+      return { id: 'sa-1' };
+    },
+  };
+  const controller = new StoresController(service as any);
+  const listQuery = { province: 'Ho Chi Minh', service: 'pickup', openNow: true } as any;
+  const nearestQuery = { lat: 10.77, lng: 106.7, radiusKm: 15, limit: 5 } as any;
+  const appointmentBody = {
+    fullName: 'Nguyen Van A',
+    phone: '0909000000',
+    service: 'pickup',
+    scheduledFor: new Date('2099-01-01T10:00:00.000Z'),
+  } as any;
+
+  assert.deepEqual(controller.list(listQuery), { total: 1, data: [] });
+  assert.deepEqual(controller.nearest(nearestQuery), { total: 1, data: [] });
+  assert.deepEqual(controller.detail('banhang-district-1'), { id: 's-1' });
+  assert.deepEqual(controller.createAppointment('banhang-district-1', appointmentBody), { id: 'sa-1' });
+
+  assert.deepEqual(calls, [
+    { method: 'list', args: [listQuery] },
+    { method: 'nearest', args: [nearestQuery] },
+    { method: 'detail', args: ['banhang-district-1'] },
+    { method: 'createAppointment', args: ['banhang-district-1', appointmentBody] },
+  ]);
+});
+
 test('ProductsController forwards catalog queries and admin mutations', async () => {
   const calls: Array<{ method: string; args: unknown[] }> = [];
   const service = {
@@ -1049,6 +1369,34 @@ test('ProductsController forwards catalog queries and admin mutations', async ()
       calls.push({ method: 'moderateReview', args });
       return { id: 'r-1', status: 'published' };
     },
+    listPriceHistory: (...args: unknown[]) => {
+      calls.push({ method: 'listPriceHistory', args });
+      return { data: [] };
+    },
+    setPriceAlert: (...args: unknown[]) => {
+      calls.push({ method: 'setPriceAlert', args });
+      return { success: true };
+    },
+    removePriceAlert: (...args: unknown[]) => {
+      calls.push({ method: 'removePriceAlert', args });
+      return { success: true };
+    },
+    listQuestions: (...args: unknown[]) => {
+      calls.push({ method: 'listQuestions', args });
+      return { total: 1, data: [] };
+    },
+    createQuestion: (...args: unknown[]) => {
+      calls.push({ method: 'createQuestion', args });
+      return { id: 'q-1' };
+    },
+    upvoteQuestion: (...args: unknown[]) => {
+      calls.push({ method: 'upvoteQuestion', args });
+      return { success: true, applied: true, upvoteCount: 2 };
+    },
+    answerQuestion: (...args: unknown[]) => {
+      calls.push({ method: 'answerQuestion', args });
+      return { id: 'q-1', answer: 'Tra loi' };
+    },
     findOne: (...args: unknown[]) => {
       calls.push({ method: 'findOne', args });
       return { id: 'p-1' };
@@ -1068,11 +1416,16 @@ test('ProductsController forwards catalog queries and admin mutations', async ()
   const mediaBody = { url: 'https://cdn.example.com/p-1.jpg' } as any;
   const reviewQuery = { rating: 5, sort: 'helpful' } as any;
   const moderationQuery = { status: 'pending', page: 1 } as any;
+  const priceHistoryQuery = { days: 30, limit: 20 } as any;
   const reviewBody = {
     rating: 5,
     content: 'Rat hai long voi san pham va toc do giao hang.',
   } as any;
+  const priceAlertBody = { targetPrice: 19_500_000 } as any;
+  const questionQuery = { q: 'esim', answeredOnly: true } as any;
+  const questionBody = { question: 'May co eSIM khong?' } as any;
   const replyBody = { content: 'Cam on ban.' } as any;
+  const answerBody = { answer: 'Co, may ho tro eSIM.' } as any;
   const moderateBody = { status: 'published', adminReply: 'Da duyet.' } as any;
 
   assert.deepEqual(controller.findAll({ limit: 12 } as any), { total: 1, data: [] });
@@ -1103,6 +1456,26 @@ test('ProductsController forwards catalog queries and admin mutations', async ()
     id: 'r-1',
     status: 'published',
   });
+  assert.deepEqual(controller.priceHistory('iphone-15', priceHistoryQuery), { data: [] });
+  assert.deepEqual(
+    controller.setPriceAlert({ user: { sub: 'u-1' } } as any, 'iphone-15', priceAlertBody),
+    { success: true },
+  );
+  assert.deepEqual(controller.questions('iphone-15', questionQuery), { total: 1, data: [] });
+  assert.deepEqual(controller.createQuestion({ user: { sub: 'u-1' } } as any, 'iphone-15', questionBody), {
+    id: 'q-1',
+  });
+  assert.deepEqual(
+    controller.upvoteQuestion({ user: { sub: 'u-2' } } as any, 'iphone-15', 'q-1'),
+    { success: true, applied: true, upvoteCount: 2 },
+  );
+  assert.deepEqual(
+    controller.answerQuestion({ user: { sub: 'u-admin' } } as any, 'iphone-15', 'q-1', answerBody),
+    { id: 'q-1', answer: 'Tra loi' },
+  );
+  assert.deepEqual(controller.removePriceAlert({ user: { sub: 'u-1' } } as any, 'iphone-15'), {
+    success: true,
+  });
   assert.deepEqual(controller.findOne('iphone-15'), { id: 'p-1' });
 
   assert.deepEqual(calls, [
@@ -1123,6 +1496,13 @@ test('ProductsController forwards catalog queries and admin mutations', async ()
     { method: 'markReviewHelpful', args: ['u-2', 'iphone-15', 'r-1'] },
     { method: 'replyReview', args: ['iphone-15', 'r-1', 'Cam on ban.'] },
     { method: 'moderateReview', args: ['iphone-15', 'r-1', moderateBody] },
+    { method: 'listPriceHistory', args: ['iphone-15', priceHistoryQuery] },
+    { method: 'setPriceAlert', args: ['u-1', 'iphone-15', priceAlertBody] },
+    { method: 'listQuestions', args: ['iphone-15', questionQuery] },
+    { method: 'createQuestion', args: ['u-1', 'iphone-15', questionBody] },
+    { method: 'upvoteQuestion', args: ['u-2', 'iphone-15', 'q-1'] },
+    { method: 'answerQuestion', args: ['u-admin', 'iphone-15', 'q-1', 'Co, may ho tro eSIM.'] },
+    { method: 'removePriceAlert', args: ['u-1', 'iphone-15'] },
     { method: 'findOne', args: ['iphone-15'] },
   ]);
 });
@@ -1142,9 +1522,30 @@ test('WishlistController forwards wishlist operations', () => {
       calls.push({ method: 'removeItem', args });
       return { total: 1, data: [] };
     },
+    moveToCart: (...args: unknown[]) => {
+      calls.push({ method: 'moveToCart', args });
+      return { success: true, movedProductId: 'p-1' };
+    },
+    getCurrentShare: (...args: unknown[]) => {
+      calls.push({ method: 'getCurrentShare', args });
+      return { share: null };
+    },
+    createShare: (...args: unknown[]) => {
+      calls.push({ method: 'createShare', args });
+      return { share: { token: 'share-token' } };
+    },
+    regenerateShare: (...args: unknown[]) => {
+      calls.push({ method: 'regenerateShare', args });
+      return { share: { token: 'share-token-2' } };
+    },
+    getSharedWishlist: (...args: unknown[]) => {
+      calls.push({ method: 'getSharedWishlist', args });
+      return { total: 1, data: [] };
+    },
   };
   const controller = new WishlistController(service as any);
   const request = { user: { sub: 'u-1' } } as any;
+  const shareBody = { title: 'Tech picks', expiresInDays: 7 } as any;
 
   assert.deepEqual(controller.list(request), { total: 1, data: [] });
   assert.deepEqual(controller.addItem(request, { productId: 'p-1' } as any), {
@@ -1155,10 +1556,27 @@ test('WishlistController forwards wishlist operations', () => {
     total: 1,
     data: [],
   });
+  assert.deepEqual(controller.moveToCart(request, 'p-1'), {
+    success: true,
+    movedProductId: 'p-1',
+  });
+  assert.deepEqual(controller.currentShare(request), { share: null });
+  assert.deepEqual(controller.createShare(request, shareBody), {
+    share: { token: 'share-token' },
+  });
+  assert.deepEqual(controller.regenerateShare(request, shareBody), {
+    share: { token: 'share-token-2' },
+  });
+  assert.deepEqual(controller.shared('share-token'), { total: 1, data: [] });
 
   assert.deepEqual(calls, [
     { method: 'list', args: ['u-1'] },
     { method: 'addItem', args: ['u-1', 'p-1'] },
     { method: 'removeItem', args: ['u-1', 'p-1'] },
+    { method: 'moveToCart', args: ['u-1', 'p-1'] },
+    { method: 'getCurrentShare', args: ['u-1'] },
+    { method: 'createShare', args: ['u-1', shareBody] },
+    { method: 'regenerateShare', args: ['u-1', shareBody] },
+    { method: 'getSharedWishlist', args: ['share-token'] },
   ]);
 });

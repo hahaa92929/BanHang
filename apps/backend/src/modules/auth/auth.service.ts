@@ -154,6 +154,7 @@ export class AuthService {
     phone?: string,
     meta: RequestMeta = {},
     guestAccessToken?: string,
+    referralCode?: string,
   ) {
     const guestUserId = this.resolveGuestUserId(guestAccessToken);
     const provider = this.parseSocialProvider(providerInput);
@@ -200,6 +201,9 @@ export class AuthService {
       const existingUser = await tx.user.findUnique({
         where: { email: normalizedEmail },
       });
+      const referrer = existingUser
+        ? null
+        : await this.resolveReferrerByCode(tx, referralCode, normalizedEmail);
 
       const userRecord =
         existingUser ??
@@ -210,6 +214,8 @@ export class AuthService {
             fullName: fullName || this.deriveSocialFullName(normalizedEmail),
             phone,
             role: UserRole.customer,
+            referralCode: await this.generateReferralCode(tx, fullName || normalizedEmail),
+            referredById: referrer?.id ?? null,
             emailVerifiedAt: new Date(),
           },
         }));
@@ -224,6 +230,10 @@ export class AuthService {
       });
 
       if (!existingUser) {
+        if (referrer) {
+          await this.createReferralSignup(tx, referrer.id, userRecord.id, referrer.referralCode!);
+        }
+
         await tx.notification.create({
           data: {
             userId: userRecord.id,
@@ -268,6 +278,7 @@ export class AuthService {
     phone?: string,
     meta: RequestMeta = {},
     guestAccessToken?: string,
+    referralCode?: string,
   ) {
     const guestUserId = this.resolveGuestUserId(guestAccessToken);
     const normalizedEmail = this.normalizeEmail(email);
@@ -283,6 +294,7 @@ export class AuthService {
 
     const passwordHash = await hashPassword(password);
     const { user, verificationToken } = await this.prisma.$transaction(async (tx) => {
+      const referrer = await this.resolveReferrerByCode(tx, referralCode, normalizedEmail);
       const createdUser = await tx.user.create({
         data: {
           email: normalizedEmail,
@@ -290,8 +302,14 @@ export class AuthService {
           fullName,
           phone,
           role: UserRole.customer,
+          referralCode: await this.generateReferralCode(tx, fullName || normalizedEmail),
+          referredById: referrer?.id ?? null,
         },
       });
+
+      if (referrer) {
+        await this.createReferralSignup(tx, referrer.id, createdUser.id, referrer.referralCode!);
+      }
 
       await tx.notification.create({
         data: {
@@ -708,6 +726,7 @@ export class AuthService {
       role: user.role,
       fullName: user.fullName,
       phone: user.phone,
+      referralCode: user.referralCode,
       emailVerifiedAt: user.emailVerifiedAt,
       twoFactorEnabledAt: user.twoFactorEnabledAt,
       lastLoginAt: user.lastLoginAt,
@@ -808,6 +827,11 @@ export class AuthService {
 
   private normalizeEmail(email: string) {
     return email.trim().toLowerCase();
+  }
+
+  private normalizeReferralCode(code?: string) {
+    const normalized = code?.trim().toUpperCase();
+    return normalized ? normalized : undefined;
   }
 
   private resolveGuestUserId(guestAccessToken?: string) {
@@ -1038,6 +1062,84 @@ export class AuthService {
 
   private deriveSocialFullName(email: string) {
     return email.split('@')[0].replace(/[._-]+/g, ' ').trim() || 'Social User';
+  }
+
+  private async resolveReferrerByCode(
+    tx: Prisma.TransactionClient,
+    referralCode: string | undefined,
+    normalizedEmail: string,
+  ) {
+    const normalizedCode = this.normalizeReferralCode(referralCode);
+    if (!normalizedCode) {
+      return null;
+    }
+
+    const referrer = await tx.user.findUnique({
+      where: { referralCode: normalizedCode },
+    });
+
+    if (!referrer) {
+      throw new BadRequestException('Referral code is invalid');
+    }
+
+    if (referrer.email === normalizedEmail) {
+      throw new BadRequestException('Cannot use your own referral code');
+    }
+
+    return referrer;
+  }
+
+  private async createReferralSignup(
+    tx: Prisma.TransactionClient,
+    referrerId: string,
+    referredUserId: string,
+    referralCode: string,
+  ) {
+    await tx.referralEvent.create({
+      data: {
+        referrerId,
+        referredUserId,
+        referralCode,
+      },
+    });
+
+    await tx.notification.create({
+      data: {
+        userId: referrerId,
+        type: 'promotion',
+        title: 'New referral signup',
+        content: 'A new customer signed up using your referral link.',
+        data: {
+          referredUserId,
+          referralCode,
+        },
+      },
+    });
+  }
+
+  private async generateReferralCode(
+    tx: Prisma.TransactionClient,
+    seed: string,
+  ) {
+    const base =
+      seed
+        .trim()
+        .toUpperCase()
+        .replace(/[^A-Z0-9]+/g, '')
+        .slice(0, 6) || 'BANHAN';
+
+    for (let attempt = 0; attempt < 10; attempt += 1) {
+      const candidate = `${base}${generateToken(3).toUpperCase()}`;
+      const existing = await tx.user.findUnique({
+        where: { referralCode: candidate },
+      });
+
+      if (!existing) {
+        return candidate;
+      }
+    }
+
+    return `${base}${generateToken(6).toUpperCase()}`;
   }
 
   private assertTwoFactorCode(user: User, otp?: string) {
