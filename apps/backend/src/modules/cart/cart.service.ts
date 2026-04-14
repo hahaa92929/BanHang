@@ -32,6 +32,7 @@ export class CartService {
     return this.formatCart(rows, cartCoupon?.coupon ?? null);
   }
 
+
   async addItem(userId: string, productId: string, quantity: number, variantId?: string) {
     const selection = await this.resolvePurchaseSelection(productId, variantId);
     const existing = await this.prisma.cartItem.findFirst({
